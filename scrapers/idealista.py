@@ -160,7 +160,7 @@ def _scrape_detail(page, url: str, site_config: dict) -> dict | None:
         return None
 
 
-def run(dry_run: bool = False) -> list[dict]:
+def run(dry_run: bool = False, limit: int = 0) -> list[dict]:
     results = []
 
     with sync_playwright() as p:
@@ -185,6 +185,8 @@ def run(dry_run: bool = False) -> list[dict]:
 
             all_urls = _collect_urls(page, site_config["url"], MAX_PAGES_PER_SITE)
             new_urls = [u for u in all_urls if u not in processed]
+            if limit:
+                new_urls = new_urls[:limit]
             log.info("[Idealista] %s — %d new listings", name, len(new_urls))
 
             consecutive_errors = 0

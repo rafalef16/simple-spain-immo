@@ -35,9 +35,10 @@ echo "  2) Lancer le scraper complet (toutes sources)"
 echo "  3) Lancer le scraper sans proxy (Mobilia + ThinkSpain + Kyero)"
 echo "  4) Lancer le scraper proxy uniquement (Fotocasa + Idealista)"
 echo "  5) Fusionner les données JSON → master.json"
-echo "  6) Quitter"
+echo "  6) TEST — 20 URLs par source (dry-run, toutes sources)"
+echo "  7) Quitter"
 echo ""
-read -p "Choix [1-6] : " choice
+read -p "Choix [1-7] : " choice
 
 case $choice in
   1)
@@ -59,6 +60,12 @@ case $choice in
   5)
     echo "🔀 Fusion des données..."
     $PYTHON pipeline.py --merge-only
+    ;;
+  6)
+    echo "🧪 TEST — 20 URLs par source, dry-run (aucune écriture disque)..."
+    echo "   Sources proxy  : fotocasa, idealista, thinkspain, kyero"
+    echo "   Sources locales: mobilia, regional"
+    $PYTHON pipeline.py --sites fotocasa idealista thinkspain kyero mobilia regional --limit 20 --dry-run
     ;;
   *)
     echo "Au revoir."

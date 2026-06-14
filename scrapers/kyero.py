@@ -1,12 +1,12 @@
 """
-Kyero scraper — static HTML, no proxy needed.
+Kyero scraper — static HTML, EVOMI residential proxy.
 Pagination via ?page=N or /page/N.
 """
 import re
 import logging
 import requests
 
-from config import SITES_KYERO, MAX_PAGES_PER_SITE, MAX_CONSECUTIVE_ERRORS
+from config import SITES_KYERO, MAX_PAGES_PER_SITE, MAX_CONSECUTIVE_ERRORS, EVOMI_USER, EVOMI_PASS_BASE
 from modules.db import load_processed_urls, append_listing
 from modules.cleanup import clean_text, cover_image, dedup_hash, parse_price, parse_surface, is_solar_listing
 from modules.cities import normalize
@@ -139,8 +139,10 @@ def _scrape_detail(url: str, session: requests.Session) -> dict | None:
     )
 
 
-def run(dry_run: bool = False) -> list[dict]:
+def run(dry_run: bool = False, limit: int = 0) -> list[dict]:
     session = requests.Session()
+    _proxy = f"http://{EVOMI_USER}:{EVOMI_PASS_BASE}@core-residential.evomi.com:1000"
+    session.proxies = {"http": _proxy, "https": _proxy}
     results = []
 
     for site_config in SITES_KYERO:
@@ -167,6 +169,8 @@ def run(dry_run: bool = False) -> list[dict]:
                 break
             human_delay()
 
+        if limit:
+            detail_urls = detail_urls[:limit]
         log.info("[Kyero] %d new detail URLs", len(detail_urls))
 
         for i, url in enumerate(detail_urls):

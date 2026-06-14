@@ -1,6 +1,6 @@
 """
 ThinkSpain scraper — uses __NEXT_DATA__ JSON embedded in HTML pages.
-No proxy needed. Pagination via ?page=N.
+EVOMI residential proxy (same as Fotocasa/Idealista). Pagination via ?page=N.
 """
 import json
 import re
@@ -9,7 +9,7 @@ import time
 import random
 import requests
 
-from config import SITES_THINKSPAIN, MAX_PAGES_PER_SITE, MAX_CONSECUTIVE_ERRORS
+from config import SITES_THINKSPAIN, MAX_PAGES_PER_SITE, MAX_CONSECUTIVE_ERRORS, EVOMI_USER, EVOMI_PASS_BASE
 from modules.db import load_processed_urls, append_listing
 from modules.cleanup import clean_text, cover_image, dedup_hash, parse_price, parse_surface, is_solar_listing
 from modules.cities import normalize
@@ -159,8 +159,10 @@ def _scrape_detail(url: str, session: requests.Session, prop_type: str) -> dict 
     return listing
 
 
-def run(dry_run: bool = False) -> list[dict]:
+def run(dry_run: bool = False, limit: int = 0) -> list[dict]:
     session = requests.Session()
+    _proxy = f"http://{EVOMI_USER}:{EVOMI_PASS_BASE}@core-residential.evomi.com:1000"
+    session.proxies = {"http": _proxy, "https": _proxy}
     results = []
 
     for site_config in SITES_THINKSPAIN:
@@ -187,6 +189,8 @@ def run(dry_run: bool = False) -> list[dict]:
             log.info("[ThinkSpain] page %d: +%d URLs", page, len(page_urls))
             human_delay()
 
+        if limit:
+            detail_urls = detail_urls[:limit]
         log.info("[ThinkSpain] %s — %d new detail URLs to scrape", name, len(detail_urls))
 
         for i, url in enumerate(detail_urls):

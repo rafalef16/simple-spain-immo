@@ -239,7 +239,7 @@ def _collect_links_witei(browser, url: str) -> list[str]:
     return links
 
 
-def _run_site_js(site_config: dict, browser, dry_run: bool) -> int:
+def _run_site_js(site_config: dict, browser, dry_run: bool, limit: int = 0) -> int:
     name = site_config["name"]
     base_url = site_config["url"]
     base = _base_domain(base_url)
@@ -270,6 +270,8 @@ def _run_site_js(site_config: dict, browser, dry_run: bool) -> int:
         log.info("[regional] %s page %d: +%d links", name, page, len(new_links))
         time.sleep(random.uniform(2, 4))
 
+    if limit:
+        all_detail_urls = all_detail_urls[:limit]
     log.info("[regional] %s: %d new detail URLs", name, len(all_detail_urls))
 
     for i, url in enumerate(all_detail_urls):
@@ -294,7 +296,7 @@ def _run_site_js(site_config: dict, browser, dry_run: bool) -> int:
     return added
 
 
-def run(dry_run: bool = False) -> list[dict]:
+def run(dry_run: bool = False, limit: int = 0) -> list[dict]:
     pw, browser = _get_browser()
     total = 0
 
@@ -304,7 +306,7 @@ def run(dry_run: bool = False) -> list[dict]:
         for site in SITES_JS_NOPRX:
             log.info("→ %s", site["name"])
             try:
-                total += _run_site_js(site, browser, dry_run)
+                total += _run_site_js(site, browser, dry_run, limit)
             except Exception as e:
                 log.error("[regional] %s FAILED: %s", site["name"], e, exc_info=True)
     finally:

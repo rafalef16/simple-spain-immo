@@ -452,6 +452,8 @@ def _run_site(site_config: dict, link_fn, page_param: str,
         log.debug("[%s] page %d: +%d links", name, page, len(new_links))
         time.sleep(random.uniform(1.5, 3.0))
 
+    if limit:
+        detail_urls = detail_urls[:limit]
     log.info("[%s] %d new detail URLs", name, len(detail_urls))
     consecutive = 0
 
@@ -479,7 +481,7 @@ def _run_site(site_config: dict, link_fn, page_param: str,
 
 # ── PUBLIC ENTRY POINT ────────────────────────────────────────────────────
 
-def run(dry_run: bool = False) -> list[dict]:
+def run(dry_run: bool = False, limit: int = 0) -> list[dict]:
     session = requests.Session()
     session.headers.update({"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36", "Accept-Language": "es-ES"})
     total = 0
