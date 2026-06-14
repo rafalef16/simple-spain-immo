@@ -3,6 +3,15 @@ import hashlib
 
 
 _NOISE_PATTERNS = [
+    # Structural blocks (must come before generic tag stripper)
+    (r'<header[^>]*>.*?</header>', ' '),
+    (r'<footer[^>]*>.*?</footer>', ' '),
+    (r'<nav[^>]*>.*?</nav>', ' '),
+    (r'<aside[^>]*>.*?</aside>', ' '),
+    (r'<div[^>]*(?:class|id)="[^"]*(?:cookie|consent|gdpr)[^"]*"[^>]*>.*?</div>', ' '),
+    (r'<div[^>]*role="dialog"[^>]*>.*?</div>', ' '),
+    (r'<div[^>]*(?:class|id)="[^"]*(?:banner|promo|ad-)[^"]*"[^>]*>.*?</div>', ' '),
+    # Media / script
     (r'<script[^>]*>.*?</script>', ' '),
     (r'<style[^>]*>.*?</style>', ' '),
     (r'<svg[^>]*>.*?</svg>', ' '),
