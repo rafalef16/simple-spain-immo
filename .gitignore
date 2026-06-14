@@ -1,0 +1,19 @@
+# Environment
+.env
+*.pyc
+__pycache__/
+.DS_Store
+
+# Data (trop lourd pour git — utiliser git-lfs si nécessaire)
+data/
+logs/
+
+# Python
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# Playwright
+.playwright/
