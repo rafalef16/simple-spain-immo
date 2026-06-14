@@ -5,6 +5,7 @@
 # ─────────────────────────────────────────────────────────────────
 set -e
 PYTHON=/Users/monix/miniforge3/bin/python3
+STREAMLIT=/Users/monix/miniforge3/bin/streamlit
 DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$DIR"
 
@@ -24,6 +25,7 @@ $PYTHON -c "import streamlit, playwright" 2>/dev/null || {
   echo "⚙️  Installation des dépendances..."
   $PYTHON -m pip install -r requirements.txt -q
   $PYTHON -m playwright install chromium
+  STREAMLIT=/Users/monix/miniforge3/bin/streamlit
 }
 
 echo ""
@@ -40,7 +42,7 @@ read -p "Choix [1-6] : " choice
 case $choice in
   1)
     echo "🚀 Lancement de l'interface..."
-    streamlit run app.py --server.port 8501
+    $STREAMLIT run app.py --server.port 8501
     ;;
   2)
     echo "🕷️  Scraper complet..."
