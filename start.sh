@@ -36,9 +36,10 @@ echo "  3) Lancer le scraper sans proxy (Mobilia + ThinkSpain + Kyero)"
 echo "  4) Lancer le scraper proxy uniquement (Fotocasa + Idealista)"
 echo "  5) Fusionner les données JSON → master.json"
 echo "  6) TEST — 20 URLs par source (dry-run, toutes sources)"
-echo "  7) Quitter"
+echo "  7) DIAG — 1 annonce par site local (mobilia+regional), dry-run"
+echo "  8) Quitter"
 echo ""
-read -p "Choix [1-7] : " choice
+read -p "Choix [1-8] : " choice
 
 case $choice in
   1)
@@ -66,6 +67,10 @@ case $choice in
     echo "   Sources proxy  : fotocasa, idealista, thinkspain, kyero"
     echo "   Sources locales: mobilia, regional"
     $PYTHON pipeline.py --sites fotocasa idealista thinkspain kyero mobilia regional --limit 20 --dry-run
+    ;;
+  7)
+    echo "🔬 DIAG — 1 annonce par site local, dry-run..."
+    $PYTHON pipeline.py --sites mobilia regional --limit 1 --dry-run
     ;;
   *)
     echo "Au revoir."

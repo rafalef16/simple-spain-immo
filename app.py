@@ -46,9 +46,10 @@ st.markdown("""
 
 
 # ── DATA ──────────────────────────────────────────────────────────────────────
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=60)
 def _load():
-    return load_master()
+    from modules.db import merge_all_to_master
+    return merge_all_to_master()
 
 
 # ── HELPERS ───────────────────────────────────────────────────────────────────

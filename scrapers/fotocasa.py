@@ -45,9 +45,11 @@ def _collect_listing_urls(page, base_url: str) -> list[str]:
     """Collect all listing URLs from search result pages."""
     urls = []
     for pg in range(1, MAX_PAGES_PER_SITE + 1):
-        url = base_url if pg == 1 else f"{base_url}&pg={pg}"
+        pg_url = base_url if pg == 1 else re.sub(r'/l(/\d+)?$', f'/l/{pg}', base_url)
+        if pg > 1 and pg_url == base_url:
+            pg_url = base_url.rstrip("/") + f"/{pg}"
         try:
-            page.goto(url, wait_until="domcontentloaded", timeout=45000)
+            page.goto(pg_url, wait_until="domcontentloaded", timeout=45000)
             time.sleep(random.uniform(3, 5))
 
             # Accept cookies once
@@ -57,7 +59,9 @@ def _collect_listing_urls(page, base_url: str) -> list[str]:
                 pass
 
             html = page.content()
-            page_urls = re.findall(r'href="(https://www\.fotocasa\.es/es/comprar/[^"]+/\d+)"', html)
+            # Property URLs: /es/comprar/<type>/<zone>/<id>
+            page_urls = re.findall(r'"(https://www\.fotocasa\.es/es/(?:comprar|alquiler)/[^"]+/\d+)"', html)
+            page_urls = [u for u in page_urls if not u.endswith("/l")]
             page_urls = list(dict.fromkeys(page_urls))
 
             if not page_urls:
@@ -66,6 +70,17 @@ def _collect_listing_urls(page, base_url: str) -> list[str]:
 
             urls.extend(page_urls)
             log.info("[Fotocasa] Page %d: +%d URLs", pg, len(page_urls))
+
+            # Check pagination link — Playwright test: 'Siguiente' or 'Ir a la siguiente página'
+            has_next = False
+            for next_name in ["Siguiente", "Ir a la siguiente página"]:
+                if page.get_by_role("link", name=next_name).count() > 0:
+                    has_next = True
+                    break
+            if not has_next:
+                log.info("[Fotocasa] No next-page link, stopping after page %d", pg)
+                break
+
         except Exception as e:
             log.warning("[Fotocasa] Error collecting page %d: %s", pg, e)
             break
@@ -79,46 +94,110 @@ def _scrape_detail(page, url: str, prop_type: str) -> dict | None:
         page.evaluate("() => { Object.defineProperty(navigator, 'webdriver', {get: () => undefined}) }")
         time.sleep(random.uniform(4, 6))
 
+        # Description — Playwright test: click 'Leer más' button then read text
         try:
-            page.evaluate('''() => {
-                const btn = Array.from(document.querySelectorAll("button")).find(b => b.innerText.includes("Leer más"));
-                if (btn) btn.click();
-                else document.querySelector(".re-DetailDescription-button")?.click();
-            }''')
+            page.get_by_role("button", name="Leer más").click(timeout=3000)
             time.sleep(1)
         except Exception:
-            pass
+            try:
+                page.evaluate('''() => {
+                    document.querySelector(".re-DetailDescription-button, [class*='description'] button")?.click();
+                }''')
+                time.sleep(1)
+            except Exception:
+                pass
 
         html = page.content()
 
-        desc_el = page.locator(".re-DetailDescriptionContainer")
-        desc = clean_text(desc_el.inner_text()) if desc_el.count() > 0 else ""
+        # Description text — try multiple selectors
+        desc = ""
+        for sel in [".re-DetailDescriptionContainer", ".re-DetailDescription",
+                    "[class*='DetailDescription']", "[class*='description-text']"]:
+            el = page.locator(sel)
+            if el.count() > 0:
+                t = clean_text(el.first.inner_text())
+                if len(t) > 30:
+                    desc = t
+                    break
 
         if is_solar_listing(desc):
             log.debug("[Fotocasa] Skipping solar: %s", url)
             return None
 
+        # Price — Playwright test: page.locator('span').filter({ hasText: '€' })
         prix_raw = ""
-        prix_el = page.locator(".re-DetailHeader-price")
-        if prix_el.count() > 0:
-            prix_raw = clean_text(prix_el.first.inner_text())
+        for sel in [".re-DetailHeader-price", "[class*='DetailHeader-price']",
+                    "[class*='price']", "span[class*='price']"]:
+            el = page.locator(sel)
+            if el.count() > 0:
+                t = clean_text(el.first.inner_text())
+                if any(c.isdigit() for c in t):
+                    prix_raw = t
+                    break
+        if not prix_raw:
+            spans = page.locator("span").all()
+            for sp in spans[:60]:
+                t = sp.inner_text()
+                if "€" in t and any(c.isdigit() for c in t):
+                    prix_raw = clean_text(t)
+                    break
         prix_eur, prix_display = parse_price(prix_raw)
 
-        # Surfaces from features list
+        # Surfaces — Playwright test: 'habs.6 baños394 m²37258 m² terreno' in one block
         terrain_m2 = None
         construction_m2 = None
-        features = page.locator(".re-DetailFeaturesList li")
-        for i in range(features.count()):
-            text = features.nth(i).inner_text().lower()
-            if "terreno" in text or "parcela" in text or "suelo" in text:
-                terrain_m2 = parse_surface(text)
-            if "construida" in text or "útil" in text or "habitable" in text:
-                construction_m2 = parse_surface(text)
+        for sel in [".re-DetailFeaturesList li", "[class*='Features'] li",
+                    "[class*='feature'] li", "li[class*='detail']"]:
+            items = page.locator(sel).all()
+            if items:
+                for it in items:
+                    text = it.inner_text().lower()
+                    if any(w in text for w in ["terreno", "parcela", "suelo", "solar"]):
+                        v = parse_surface(text)
+                        if v and terrain_m2 is None:
+                            terrain_m2 = v
+                    if any(w in text for w in ["construida", "útil", "habitable"]):
+                        v = parse_surface(text)
+                        if v and construction_m2 is None:
+                            construction_m2 = v
+                if terrain_m2 or construction_m2:
+                    break
+        # Fallback: parse stats block text (e.g. '394 m²37258 m² terreno')
+        if terrain_m2 is None:
+            stats_text = ""
+            for sel in ["[class*='topContainer']", "[data-testid*='topContainer']", "[class*='Features']"]:
+                el = page.locator(sel)
+                if el.count() > 0:
+                    stats_text = el.first.inner_text()
+                    break
+            if stats_text:
+                m2_matches = re.findall(r'([\d\.]+)\s*m²\s*(terreno|suelo|parcela)?', stats_text.lower())
+                for val, label in m2_matches:
+                    v = parse_surface(val + " m²")
+                    if label and terrain_m2 is None:
+                        terrain_m2 = v
+                    elif not label and construction_m2 is None:
+                        construction_m2 = v
 
-        # City from URL
-        parts = url.split("/")
-        ville_slug = parts[6] if len(parts) > 6 else ""
-        ville = from_url_slug(ville_slug)
+        # City — Playwright test: getByTestId('re-ContentDetail-topContainer--main').getByText('Reus')
+        ville = ""
+        city_el = page.get_by_test_id("re-ContentDetail-topContainer--main")
+        if city_el.count() > 0:
+            raw = clean_text(city_el.first.inner_text())
+            # Take last non-empty line (usually city)
+            lines = [l.strip() for l in raw.split("\n") if l.strip()]
+            if lines:
+                ville = lines[-1].split(",")[0].strip()
+        if not ville:
+            for sel in ["[class*='DetailLocation']", "[class*='location']", "address"]:
+                el = page.locator(sel)
+                if el.count() > 0:
+                    ville = clean_text(el.first.inner_text().split(",")[0])
+                    break
+        if not ville:
+            parts = url.split("/")
+            ville_slug = parts[6] if len(parts) > 6 else ""
+            ville = from_url_slug(ville_slug)
 
         img = cover_image(html, SITE)
         photos = list({

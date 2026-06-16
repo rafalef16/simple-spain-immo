@@ -28,8 +28,13 @@ def save(name: str, data: list[dict]) -> None:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
+_CHECKPOINT_INTERVAL = 5
+_checkpoint_counters: dict[str, int] = {}
+
 def append_listing(name: str, listing: dict) -> bool:
-    """Append a single listing; returns True if added, False if duplicate."""
+    """Append a single listing; returns True if added, False if duplicate.
+    Every 5 new listings also rebuilds master.json as a checkpoint.
+    """
     data = load(name)
     existing_ids = {item.get("id") for item in data}
     if listing.get("id") in existing_ids:
@@ -38,7 +43,23 @@ def append_listing(name: str, listing: dict) -> bool:
     if listing.get("url") in existing_urls:
         return False
     data.append(listing)
-    save(name, data)
+    # Atomic write: temp file → rename to avoid corrupt JSON on SIGINT
+    p = _path(name)
+    tmp = p.with_suffix(".tmp")
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        tmp.replace(p)
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise
+    # Checkpoint: rebuild master.json every 5 listings per source
+    _checkpoint_counters[name] = _checkpoint_counters.get(name, 0) + 1
+    if _checkpoint_counters[name] % _CHECKPOINT_INTERVAL == 0:
+        try:
+            merge_all_to_master()
+        except Exception:
+            pass
     return True
 
 

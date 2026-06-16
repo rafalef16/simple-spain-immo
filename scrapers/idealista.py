@@ -78,28 +78,38 @@ def _scrape_detail(page, url: str, site_config: dict) -> dict | None:
                 title = clean_text(el.first.inner_text())
                 break
 
-        # Price
+        # Price — Playwright test: page.getByText('460.000', {exact:true})
         prix_raw = ""
-        for sel in [".info-data-price", "[class*='price']", ".price-features__price"]:
+        for sel in [".info-data-price span", ".price-features__price", ".info-data-price",
+                    "[class*='price-features']", "[class*='price']"]:
             el = page.locator(sel)
             if el.count() > 0:
-                prix_raw = clean_text(el.first.inner_text())
-                break
+                t = clean_text(el.first.inner_text())
+                if any(c.isdigit() for c in t):
+                    prix_raw = t
+                    break
         prix_eur, prix_display = parse_price(prix_raw)
 
-        # Description (click "Ver más" if present)
+        # Description — Playwright test: click 'Leer comentario completo' link first
         try:
-            page.locator("a.more-description").click(timeout=3000)
+            page.get_by_role("link", name="Leer comentario completo").click(timeout=4000)
             time.sleep(1)
         except Exception:
-            pass
+            try:
+                page.locator("a.more-description, a[class*='more'], a[class*='description-link']").click(timeout=2000)
+                time.sleep(1)
+            except Exception:
+                pass
 
         desc = ""
-        for sel in [".comment .description", "[class*='description']", "#details .comment"]:
+        for sel in [".comment .description", "#details .comment", ".adCommentsLanguage",
+                    "[class*='description']", ".comment", "#detailedComment"]:
             el = page.locator(sel)
             if el.count() > 0:
-                desc = clean_text(el.first.inner_text())
-                break
+                t = clean_text(el.first.inner_text())
+                if len(t) > 30:
+                    desc = t
+                    break
 
         if is_solar_listing(desc):
             return None
@@ -109,26 +119,60 @@ def _scrape_detail(page, url: str, site_config: dict) -> dict | None:
             log.debug("[Idealista] Not tourist property, skipping: %s", url)
             return None
 
-        # Surfaces
+        # Surfaces — Playwright test: page.getByText('446 m²').nth(1) for terrain
         terrain_m2 = None
         construction_m2 = None
-        for el in page.locator(".details-property-feature-one, .details-property li").all():
-            text = el.inner_text().lower()
-            if "parcela" in text or "terreno" in text:
-                terrain_m2 = parse_surface(text)
-            if "construida" in text or "útil" in text:
-                construction_m2 = parse_surface(text)
+        for sel in [".details-property-feature-one li", ".details-property_features li",
+                    ".details-property li", "li[class*='feature']"]:
+            items = page.locator(sel).all()
+            if items:
+                for it in items:
+                    text = it.inner_text().lower()
+                    if any(w in text for w in ["parcela", "terreno", "solar", "finca"]):
+                        v = parse_surface(text)
+                        if v and terrain_m2 is None:
+                            terrain_m2 = v
+                    if any(w in text for w in ["construida", "útil", "construidos", "habitable"]):
+                        v = parse_surface(text)
+                        if v and construction_m2 is None:
+                            construction_m2 = v
+                break
+        # Fallback: regex on full page text for m² patterns
+        if terrain_m2 is None or construction_m2 is None:
+            page_text = page.inner_text("body")
+            for line in page_text.split("\n"):
+                ll = line.lower()
+                if terrain_m2 is None and any(w in ll for w in ["parcela", "terreno", "finca"]):
+                    v = parse_surface(line)
+                    if v:
+                        terrain_m2 = v
+                if construction_m2 is None and any(w in ll for w in ["construida", "útil", "habitable"]):
+                    v = parse_surface(line)
+                    if v:
+                        construction_m2 = v
 
-        # City
+        # City — Playwright test: page.getByText('Llevant, Reus') near main title
         ville = ""
-        for sel in [".main-info__title-minor", "[class*='location']", "address"]:
+        for sel in [".main-info__title-minor", ".ide-primary-title + *", "[class*='location']",
+                    ".main-info__subtitle", "address", "[class*='address']"]:
             el = page.locator(sel)
             if el.count() > 0:
-                ville = clean_text(el.first.inner_text().split(",")[0])
-                break
+                t = clean_text(el.first.inner_text().split(",")[0])
+                if t:
+                    ville = t
+                    break
         ville_canonical = normalize(ville)
 
+        # Images — Playwright test: .main-image_first > picture, #gallery img
         img = cover_image(html, SITE)
+        if not img:
+            for sel in [".main-image_first picture img", "#gallery img", ".images-slider img"]:
+                el = page.locator(sel)
+                if el.count() > 0:
+                    src = el.first.get_attribute("src") or el.first.get_attribute("data-src") or ""
+                    if src.startswith("http"):
+                        img = src
+                        break
         photos = list(dict.fromkeys(
             re.findall(r'https://[^"\']+idealista[^"\']+\.(jpg|jpeg|webp)', html)
         ))[:20]
