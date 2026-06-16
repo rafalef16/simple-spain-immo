@@ -1,7 +1,11 @@
+import re
+import shelve
 import time
 import random
 import logging
-from datetime import datetime
+import hashlib
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 import requests
 from bs4 import BeautifulSoup
@@ -11,6 +15,47 @@ from modules.cleanup import clean_text, cover_image, dedup_hash, parse_price, pa
 from modules.cities import from_url_slug
 
 log = logging.getLogger(__name__)
+
+EXCLUDE_URL_PATTERNS = re.compile(
+    r'/(login|register|contact|about|blog|news|ayuda|help|faq|legal|cookies|privacy|'
+    r'sitemap|404|error|auth|account|user|admin|search\?|tag/|category/)',
+    re.IGNORECASE,
+)
+
+_CACHE_PATH = str(Path(__file__).parent.parent / "data" / ".url_cache")
+_CACHE_TTL = 3600 * 6  # 6 hours
+
+
+def pre_filter_urls(urls: list[str]) -> list[str]:
+    """Remove URLs matching noise patterns before HTTP fetch."""
+    return [u for u in urls if not EXCLUDE_URL_PATTERNS.search(u)]
+
+
+def fetch_html_cached(
+    url: str,
+    session: Optional[requests.Session] = None,
+    ttl: int = _CACHE_TTL,
+) -> Optional[str]:
+    """Fetch with shelve-based ETag/content cache. Returns None on HTTP error."""
+    key = hashlib.md5(url.encode()).hexdigest()
+    now = time.time()
+
+    try:
+        with shelve.open(_CACHE_PATH) as db:
+            entry = db.get(key)
+            if entry and (now - entry.get("ts", 0)) < ttl:
+                return entry["html"]
+    except Exception:
+        pass
+
+    html = fetch_html(url, session)
+    if html:
+        try:
+            with shelve.open(_CACHE_PATH) as db:
+                db[key] = {"html": html, "ts": now}
+        except Exception:
+            pass
+    return html
 
 
 EMPTY_LISTING = {

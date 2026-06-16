@@ -9,17 +9,48 @@ Usage:
   python pipeline.py --merge-only
 """
 import argparse
+import json
 import logging
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
+
+_LOG_DIR = Path(__file__).parent / "logs"
+_LOG_DIR.mkdir(exist_ok=True)
+
+
+class _JsonlHandler(logging.Handler):
+    """Appends structured JSON lines to logs/pipeline.jsonl."""
+
+    def __init__(self):
+        super().__init__()
+        self._path = _LOG_DIR / "pipeline.jsonl"
+
+    def emit(self, record: logging.LogRecord):
+        entry = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "level": record.levelname,
+            "logger": record.name,
+            "msg": self.format(record),
+        }
+        if record.exc_info:
+            import traceback
+            entry["exc"] = traceback.format_exception(*record.exc_info)
+        try:
+            with open(self._path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        except Exception:
+            pass
+
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)-8s %(name)s — %(message)s",
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler(Path(__file__).parent / "logs" / "pipeline.log"),
+        logging.FileHandler(_LOG_DIR / "pipeline.log"),
+        _JsonlHandler(),
     ],
 )
 log = logging.getLogger("pipeline")

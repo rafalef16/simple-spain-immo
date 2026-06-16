@@ -13,7 +13,7 @@ from config import SITES_THINKSPAIN, MAX_PAGES_PER_SITE, MAX_CONSECUTIVE_ERRORS,
 from modules.db import load_processed_urls, append_listing
 from modules.cleanup import clean_text, cover_image, dedup_hash, parse_price, parse_surface, is_solar_listing
 from modules.cities import normalize
-from scrapers.base import fetch_html, human_delay, new_listing, soup
+from scrapers.base import fetch_html, fetch_html_cached, human_delay, new_listing, pre_filter_urls, soup
 
 log = logging.getLogger(__name__)
 SITE = "thinkspain"
@@ -63,7 +63,7 @@ def _parse_listing_urls(html: str) -> list[str]:
 
 
 def _scrape_detail(url: str, session: requests.Session, prop_type: str) -> dict | None:
-    html = fetch_html(url, session)
+    html = fetch_html_cached(url, session)
     if not html:
         return None
 
@@ -185,7 +185,7 @@ def run(dry_run: bool = False, limit: int = 0) -> list[dict]:
             if not page_urls:
                 log.info("[ThinkSpain] %s — no more listings on page %d", name, page)
                 break
-            detail_urls.extend(u for u in page_urls if u not in processed)
+            detail_urls.extend(u for u in pre_filter_urls(page_urls) if u not in processed)
             log.info("[ThinkSpain] page %d: +%d URLs", page, len(page_urls))
             human_delay()
 

@@ -1,8 +1,9 @@
 """
 Simple Spain — Real Estate Intelligence Platform
-Streamlit UI : Carte · Recherche · Stats · À propos
+Streamlit UI : Carte · Recherche · Clients · Admin · À propos
 """
 import re
+import json
 import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
@@ -118,7 +119,7 @@ def _icon_color(prop_type: str) -> str:
 
 
 # ── SIDEBAR FILTERS ───────────────────────────────────────────────────────────
-def _sidebar_filters(all_data: list[dict]) -> list[dict]:
+def _sidebar_filters(all_data: list[dict]) -> tuple[list[dict], str]:
     with st.sidebar:
         st.image("https://flagcdn.com/es.svg", width=36)
         st.title("Simple Spain")
@@ -127,7 +128,7 @@ def _sidebar_filters(all_data: list[dict]) -> list[dict]:
 
         page = st.radio(
             "Page",
-            ["🗺️ Carte", "🔍 Recherche", "📊 Stats", "ℹ️ À propos"],
+            ["🗺️ Carte", "🔍 Recherche", "👥 Clients", "📊 Stats", "🛠️ Admin", "ℹ️ À propos"],
             label_visibility="collapsed",
         )
         st.divider()
@@ -335,6 +336,8 @@ def _card(l: dict):
     title     = l.get("title") or "Sans titre"
     ts        = (l.get("scrap_timestamp") or "")[:10]
     has_solar = "solar" in desc.lower()
+    photos    = l.get("photos") or []
+    dedup_h   = (l.get("id") or "")  # SHA256 dedup hash (full)
 
     # Badge row
     type_cls = {"finca": "green", "casa": "blue", "touristic": "orange"}.get(ptype, "grey")
@@ -346,6 +349,8 @@ def _card(l: dict):
         badges += _badge_html("🌞 SOLAR", "red")
     if days is not None and days < 2:
         badges += _badge_html("🆕 NOUVEAU", "new")
+    if photos:
+        badges += _badge_html(f"📷 {len(photos)}", "grey")
 
     with st.container(border=True):
         st.markdown(badges, unsafe_allow_html=True)
@@ -354,7 +359,9 @@ def _card(l: dict):
         # Prix + meta
         col_p, col_r, col_d = st.columns([2, 1, 1])
         col_p.markdown(
-            f'<span class="price-big">{_fmt_price(l.get("prix_eur"))}</span>',
+            f'<span class="price-big">{_fmt_price(l.get("prix_eur"))}</span>'
+            f'<span style="font-size:0.85em;color:#888;margin-left:8px">'
+            f'{l.get("prix_display") or ""}</span>',
             unsafe_allow_html=True
         )
         col_r.markdown(
@@ -370,7 +377,7 @@ def _card(l: dict):
 
         st.divider()
 
-        # Métriques 3 colonnes
+        # Métriques 3 colonnes — 15 variables obligatoires
         c1, c2, c3 = st.columns(3)
 
         with c1:
@@ -392,19 +399,23 @@ def _card(l: dict):
             st.markdown(f'<div class="metric-label">GPS</div>'
                         f'<div class="metric-val" style="font-size:0.85em">{coord_str}</div>',
                         unsafe_allow_html=True)
+            st.markdown(f'<div class="metric-label">Type</div>'
+                        f'<div class="metric-val">{ptype}</div>',
+                        unsafe_allow_html=True)
 
         with c3:
             st.markdown(f'<div class="metric-label">Source</div>'
                         f'<div class="metric-val">{site}</div>',
                         unsafe_allow_html=True)
-            st.markdown(f'<div class="metric-label">Famille CMS</div>'
+            st.markdown(f'<div class="metric-label">Famille</div>'
                         f'<div class="metric-val">{family}</div>',
                         unsafe_allow_html=True)
-            st.markdown(f'<div class="metric-label">ID</div>'
-                        f'<div class="metric-val" style="font-family:monospace">{uid}</div>',
+            st.markdown(f'<div class="metric-label">ID (SHA256)</div>'
+                        f'<div class="metric-val" style="font-family:monospace;font-size:0.8em">'
+                        f'{uid}…</div>',
                         unsafe_allow_html=True)
 
-        # Image
+        # Image principale
         if l.get("cover_image_url"):
             try:
                 st.image(l["cover_image_url"], use_column_width=True)
@@ -412,6 +423,17 @@ def _card(l: dict):
                 st.caption("📷 Image indisponible")
         else:
             st.caption("📷 Pas d'image")
+
+        # Galerie photos
+        if len(photos) > 1:
+            with st.expander(f"📸 Galerie ({len(photos)} photos)"):
+                gcols = st.columns(3)
+                for pi, photo_url in enumerate(photos[:12]):
+                    with gcols[pi % 3]:
+                        try:
+                            st.image(photo_url, use_column_width=True)
+                        except Exception:
+                            pass
 
         # Description
         if desc:
@@ -421,6 +443,36 @@ def _card(l: dict):
                 if len(desc) > 2000:
                     if st.button("Lire tout", key=f"full_{uid}_{hash(url)}"):
                         st.write(desc)
+
+        # ── Traductions Claude ────────────────────────────────────────────────
+        tr_key = f"tr_{uid}_{hash(url)}"
+        with st.expander("🌍 Traduction"):
+            tr_col1, tr_col2, tr_col3 = st.columns(3)
+            lang_chosen = None
+            if tr_col1.button("🇫🇷 FR", key=f"{tr_key}_fr"):
+                lang_chosen = "fr"
+            if tr_col2.button("🇬🇧 EN", key=f"{tr_key}_en"):
+                lang_chosen = "en"
+            if tr_col3.button("🇩🇪 DE", key=f"{tr_key}_de"):
+                lang_chosen = "de"
+
+            cache_key = f"{tr_key}_{lang_chosen}"
+            if lang_chosen:
+                if cache_key not in st.session_state:
+                    with st.spinner("Traduction en cours…"):
+                        from modules.llm_client import translate_and_anonymize
+                        result = translate_and_anonymize(
+                            listing_id=l.get("id", ""),
+                            text=desc[:1500],
+                            target_lang=lang_chosen,
+                        )
+                        st.session_state[cache_key] = result
+                result = st.session_state.get(cache_key, {})
+                if result.get("desc_tr"):
+                    st.markdown(f"**Localisation anonymisée :** {result.get('location_anon', '—')}")
+                    st.write(result["desc_tr"])
+                else:
+                    st.warning("Clé ANTHROPIC_API_KEY absente ou erreur API.")
 
         # Lien
         st.markdown(
@@ -434,10 +486,158 @@ def _card(l: dict):
 
 
 # ── PAGE RECHERCHE ────────────────────────────────────────────────────────────
+def _text_filter(data: list[dict], query: str) -> list[dict]:
+    if not query:
+        return data
+    ql = query.lower().strip()
+    return [
+        l for l in data
+        if ql in (l.get("title") or "").lower()
+        or ql in (l.get("description_clean") or "").lower()
+        or ql in (l.get("ville_canonical") or l.get("ville") or "").lower()
+        or ql in (l.get("ref") or "").lower()
+    ]
+
+
+def _supabase_fts(query: str, limit: int = 50) -> list[dict]:
+    """Full-text search via Supabase GIN index when available."""
+    try:
+        from modules.supabase_client import get_client
+        client = get_client()
+        if not client:
+            return []
+        resp = (
+            client.table("listings")
+            .select("*")
+            .text_search("description_clean", query, config="spanish")
+            .limit(limit)
+            .execute()
+        )
+        return resp.data or []
+    except Exception:
+        return []
+
+
 def page_recherche(data: list[dict]):
     st.header("🔍 Recherche")
-    st.info(f"**{len(data)} annonces** correspondent aux filtres sidebar.")
-    _grille(data)
+
+    q = st.text_input(
+        "Recherche plein-texte",
+        placeholder="ex: finca piscine, licencia turistica, vue mer…",
+        help="Recherche dans le titre, la description et la ville",
+    )
+
+    use_supa = False
+    try:
+        from modules.supabase_client import _use_supabase
+        use_supa = _use_supabase()
+    except Exception:
+        pass
+
+    if q and use_supa:
+        results = _supabase_fts(q)
+        if results:
+            st.caption(f"🗄️ Supabase FTS — **{len(results)}** résultats")
+            _grille(results)
+            return
+
+    results = _text_filter(data, q)
+    st.info(f"**{len(results)} annonces** — {('filtrées par: \"' + q + '\"') if q else 'tous les filtres sidebar'}")
+    _grille(results)
+
+
+# ── PAGE CLIENTS ──────────────────────────────────────────────────────────────
+_CLIENTS_FILE = Path(__file__).parent / "data" / "clients.json"
+
+
+def _load_clients() -> list[dict]:
+    if not _CLIENTS_FILE.exists():
+        return []
+    try:
+        return json.loads(_CLIENTS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+
+
+def _save_clients(clients: list[dict]):
+    tmp = _CLIENTS_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(clients, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(_CLIENTS_FILE)
+
+
+def page_clients(all_data: list[dict]):
+    st.header("👥 Fiches Clients")
+
+    clients = _load_clients()
+
+    # ── Ajouter un client ────────────────────────────────────────────────────
+    with st.expander("➕ Nouveau client", expanded=not clients):
+        name = st.text_input("Nom du client")
+        raw_text = st.text_area(
+            "Critères (texte libre)",
+            placeholder="Budget 150k-300k€, finca avec terrain 5000m² min, piscine, vue montagne, Tortosa ou Gandesa",
+            height=120,
+        )
+        if st.button("Enregistrer le profil", disabled=not name or not raw_text):
+            from modules.client_parser import parse
+            profile = parse(name.strip(), raw_text.strip())
+            clients.append(profile)
+            _save_clients(clients)
+            st.success(f"Profil « {name} » enregistré.")
+            st.rerun()
+
+    if not clients:
+        st.info("Aucun client enregistré. Créez un profil ci-dessus.")
+        return
+
+    # ── Liste clients ─────────────────────────────────────────────────────────
+    client_names = [c["name"] for c in clients]
+    sel_name = st.selectbox("Client actif", client_names)
+    profile = next((c for c in clients if c["name"] == sel_name), None)
+    if not profile:
+        return
+
+    col_l, col_r = st.columns([1, 2])
+    with col_l:
+        st.subheader(f"Profil : {profile['name']}")
+        st.markdown(f"**Budget :** {_fmt_price(profile.get('budget_min'))} — {_fmt_price(profile.get('budget_max'))}")
+        st.markdown(f"**Terrain :** {_fmt_m2(profile.get('terrain_min'))} — {_fmt_m2(profile.get('terrain_max'))}")
+        st.markdown(f"**Bâti :** {_fmt_m2(profile.get('construction_min'))} — {_fmt_m2(profile.get('construction_max'))}")
+        st.markdown(f"**Types :** {', '.join(profile.get('types') or []) or '—'}")
+        st.markdown(f"**Villes :** {', '.join(profile.get('villes') or []) or '—'}")
+        st.markdown(f"**Mots-clés requis :** {', '.join(profile.get('keywords_must') or []) or '—'}")
+        st.markdown(f"**Mots-clés exclus :** {', '.join(profile.get('keywords_must_not') or []) or '—'}")
+        st.divider()
+        if st.button("🗑️ Supprimer ce client", type="secondary"):
+            clients = [c for c in clients if c["name"] != sel_name]
+            _save_clients(clients)
+            st.rerun()
+
+    with col_r:
+        st.subheader("Annonces correspondantes")
+        if st.button("🔍 Lancer le matching"):
+            from modules.client_matching import rank_listings
+            with st.spinner("Matching en cours…"):
+                matches = rank_listings(all_data, profile)
+            if matches:
+                st.success(f"**{len(matches)} correspondances** trouvées.")
+                for m in matches[:20]:
+                    score = m.pop("_match_score", 0)
+                    with st.container(border=True):
+                        sc1, sc2 = st.columns([3, 1])
+                        sc1.markdown(f"**{m.get('title', 'Sans titre')}**")
+                        sc2.markdown(f"Score : **{score:.0%}**")
+                        st.caption(
+                            f"{_fmt_price(m.get('prix_eur'))} | "
+                            f"{_fmt_m2(m.get('terrain_m2'))} terrain | "
+                            f"{m.get('ville_canonical') or m.get('ville') or '—'}"
+                        )
+                        st.markdown(
+                            f'<a href="{m.get("url","#")}" target="_blank">🔗 Voir</a>',
+                            unsafe_allow_html=True,
+                        )
+            else:
+                st.warning("Aucune correspondance.")
 
 
 # ── PAGE STATS ────────────────────────────────────────────────────────────────
@@ -519,6 +719,100 @@ def page_stats(all_data: list[dict]):
         st.rerun()
 
 
+# ── PAGE ADMIN ────────────────────────────────────────────────────────────────
+def page_admin(all_data: list[dict]):
+    st.header("🛠️ Administration")
+
+    stats = scrape_stats()
+
+    # Résumé global
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Total listings (master)", stats.get("total", 0))
+    col2.metric("Sources actives", len(stats.get("by_site", {})))
+    last = stats.get("last_run")
+    col3.metric("Dernier scrape", last[:10] if last else "—")
+
+    st.divider()
+
+    # Par source
+    st.subheader("Annonces par source (fichiers JSON)")
+    by_site = stats.get("by_site", {})
+    if by_site:
+        df = pd.DataFrame(
+            sorted(by_site.items(), key=lambda x: x[1], reverse=True),
+            columns=["Fichier source", "Annonces"]
+        )
+        st.dataframe(df, use_container_width=True, hide_index=True)
+
+    st.divider()
+
+    # Qualité des données
+    st.subheader("Qualité des données")
+    total = len(all_data)
+    if total > 0:
+        fields = [
+            ("prix_eur", "Prix"),
+            ("terrain_m2", "Terrain m²"),
+            ("construction_m2", "Construction m²"),
+            ("cover_image_url", "Image couverture"),
+            ("description_clean", "Description"),
+            ("ville_canonical", "Ville"),
+            ("ref", "Référence"),
+        ]
+        quality_rows = []
+        for field, label in fields:
+            count = sum(1 for l in all_data if l.get(field))
+            pct = round(100 * count / total, 1)
+            quality_rows.append({"Champ": label, "Rempli": count, "%": pct})
+        df_q = pd.DataFrame(quality_rows)
+        st.dataframe(df_q, use_container_width=True, hide_index=True)
+
+    st.divider()
+
+    # Logs
+    st.subheader("Logs pipeline")
+    log_path = Path(__file__).parent / "logs" / "pipeline.jsonl"
+    if log_path.exists():
+        lines = log_path.read_text(encoding="utf-8").strip().split("\n")
+        recent = lines[-50:][::-1]
+        log_rows = []
+        for line in recent:
+            try:
+                entry = json.loads(line)
+                log_rows.append({
+                    "Heure": entry.get("ts", "")[:19],
+                    "Niveau": entry.get("level", ""),
+                    "Message": entry.get("msg", "")[:120],
+                })
+            except Exception:
+                pass
+        if log_rows:
+            df_logs = pd.DataFrame(log_rows)
+            st.dataframe(df_logs, use_container_width=True, hide_index=True)
+    else:
+        st.caption("Aucun log JSONL disponible (lancez un scrape d'abord).")
+
+    st.divider()
+
+    # Actions
+    st.subheader("Actions")
+    col_a, col_b = st.columns(2)
+    if col_a.button("🔄 Recharger master.json"):
+        st.cache_data.clear()
+        st.rerun()
+    if col_b.button("🗄️ Test connexion Supabase"):
+        try:
+            from modules.supabase_client import get_client, _use_supabase
+            if _use_supabase():
+                client = get_client()
+                client.table("listings").select("id").limit(1).execute()
+                st.success("✅ Supabase connecté")
+            else:
+                st.warning("⚠️ SUPABASE_URL non configuré — mode JSON local actif")
+        except Exception as e:
+            st.error(f"❌ Erreur Supabase : {e}")
+
+
 # ── PAGE À PROPOS ─────────────────────────────────────────────────────────────
 def page_about():
     st.header("ℹ️ Simple Spain")
@@ -531,8 +825,8 @@ def page_about():
 | Fotocasa — Casas rústicas + Terrenos | Géozone Terres de l'Ebre | EVOMI |
 | Idealista — Chalets (**licence touristique**) | Géozone shape | EVOMI |
 | Idealista — Casas pueblo + Fincas/Terrains | Géozone shape | EVOMI |
-| ThinkSpain — Fincas + Undeveloped lands | Rayon 75km Tortosa | Non |
-| Kyero — Maisons de campagne Tarragona | Province | Non |
+| ThinkSpain — Fincas + Undeveloped lands | Rayon 75km Tortosa | EVOMI |
+| Kyero — Maisons de campagne Tarragona | Province | EVOMI |
 | **36 agences locales** (7 familles CMS + 14 JS) | Terres de l'Ebre | Non |
 
 ### Pipeline
@@ -542,17 +836,14 @@ Scrape → Dédup SHA256 → Nettoyage HTML → Filtre solaire → Merge Master 
 
 ### Commandes
 ```bash
-make scrape           # Tout scraper
-make scrape-no-proxy  # Sans proxy (Mobilia + ThinkSpain + Kyero)
-make scrape-fotocasa  # Fotocasa (EVOMI requis)
-make scrape-idealista # Idealista (EVOMI requis)
-make app              # Lancer l'UI
+./start.sh   # Menu interactif
 ```
 
 ### Filtres automatiques
-- 🌞 **Solar** : annonces contenant "placas solares", "paneles solares" → exclues du scraper
+- 🌞 **Solar** : annonces contenant "placas solares", "paneles solares" → exclues
 - 🏖️ **Licence touristique** : Idealista uniquement → gardées si "licencia", "airbnb", "booking"...
 - ♻️ **Déduplication** : SHA256(url + 25 premiers mots description)
+- 🗑️ **Bruit URL** : login, contact, blog, etc. filtrés avant fetch HTTP
     """)
 
 
@@ -565,8 +856,12 @@ def main():
         page_carte(filtered)
     elif "Recherche" in page:
         page_recherche(filtered)
+    elif "Clients" in page:
+        page_clients(all_data)
     elif "Stats" in page:
         page_stats(all_data)
+    elif "Admin" in page:
+        page_admin(all_data)
     else:
         page_about()
 

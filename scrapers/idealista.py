@@ -22,7 +22,7 @@ log = logging.getLogger(__name__)
 SITE = "idealista"
 
 
-def _has_tourist_keyword(title: str, desc: str) -> bool:
+def _is_valid_tourist_property(title: str, desc: str) -> bool:
     combined = (title + " " + desc).lower()
     return any(kw in combined for kw in TOURIST_KEYWORDS)
 
@@ -115,7 +115,7 @@ def _scrape_detail(page, url: str, site_config: dict) -> dict | None:
             return None
 
         # Tourist filter on dedicated search
-        if site_config.get("tourist_filter") and not _has_tourist_keyword(title, desc):
+        if site_config.get("tourist_filter") and not _is_valid_tourist_property(title, desc):
             log.debug("[Idealista] Not tourist property, skipping: %s", url)
             return None
 

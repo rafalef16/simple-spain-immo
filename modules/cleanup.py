@@ -46,7 +46,17 @@ def clean_html(raw_html: str) -> str:
 def clean_text(raw: str) -> str:
     if not raw:
         return ""
-    text = raw.replace(' ', ' ').replace('\t', ' ')
+    text = raw
+    # Unicode entity normalization
+    text = text.replace(' ', ' ')   # non-breaking space
+    text = text.replace('’', "'") # right single quotation mark
+    text = text.replace('‘', "'") # left single quotation mark
+    text = text.replace('“', '"') # left double quotation mark
+    text = text.replace('”', '"') # right double quotation mark
+    text = text.replace('—', ' — ') # em dash
+    text = text.replace('–', ' – ') # en dash
+    text = text.replace('…', '...')  # horizontal ellipsis
+    text = text.replace('\t', ' ')
     text = re.sub(r'\s{2,}', ' ', text)
     return text.strip()
 
