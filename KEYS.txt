@@ -1,0 +1,67 @@
+================================================================================
+  SIMPLE SPAIN — Supabase Project Keys & Access
+================================================================================
+
+🔐 PROJECT DETAILS
+─────────────────────────────────────────────────────────────────────────────
+  Project Name     : simple-spain-immo
+  Project ID       : wiumullfvbcdogironrl
+  API URL          : https://wiumullfvbcdogironrl.supabase.co
+  Region           : Dublin (eu-west-1)
+  Plan             : Free
+
+📍 DASHBOARD LINKS
+─────────────────────────────────────────────────────────────────────────────
+  Main Dashboard   : https://supabase.com/dashboard/project/wiumullfvbcdogironrl
+  API Settings     : https://supabase.com/dashboard/project/wiumullfvbcdogironrl/settings/api
+  Database         : https://supabase.com/dashboard/project/wiumullfvbcdogironrl/editor
+
+🔑 CONFIGURED KEYS (in .env)
+─────────────────────────────────────────────────────────────────────────────
+  ✅ SUPABASE_URL
+     Value: https://wiumullfvbcdogironrl.supabase.co
+
+  ✅ SUPABASE_ANON_KEY
+     Value: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndpdW11bGxmdmJjZG9naXJvbnJsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE2Mjg5ODUsImV4cCI6MjA5NzIwNDk4NX0.PUA6aALJXargJ65FyBLuhHlxwTFe5s6-imAQzFV27bY
+
+  ⏳ SUPABASE_SERVICE_KEY
+     Status: À récupérer du dashboard
+     Where:  Settings → API → "service_role secret"
+     How:    Exécute: python3 setup_supabase.py
+
+📊 DATABASE TABLES
+─────────────────────────────────────────────────────────────────────────────
+  ✅ listings — Real estate properties
+     Columns: id, url, site, price, surfaces, description, images, timestamp
+     Index: GIN full-text search on description_clean (Spanish)
+
+  ✅ client_profiles — Client criteria
+     Columns: id, name, budget, terrain, construction, villes, types, keywords
+
+  ✅ client_matches — Client-property matches
+     Columns: id, client_id, listing_id, matched_at, notified
+
+  ✅ translations — Multilingual + anonymization
+     Columns: listing_id, lang, title_tr, desc_tr, location_anon
+
+  ✅ dedup_events — Deduplication audit log
+     Columns: id, action, listing_id, reason, created_at
+
+🚀 NEXT STEP (5 minutes)
+─────────────────────────────────────────────────────────────────────────────
+  1. Run the setup script:
+     python3 setup_supabase.py
+
+  2. Or manually:
+     a) Open: https://supabase.com/dashboard/project/wiumullfvbcdogironrl/settings/api
+     b) Copy "service_role secret" (long key starting with eyJ...)
+     c) Edit .env and paste it in SUPABASE_SERVICE_KEY=
+
+  3. Test connection:
+     python3 -c "from modules.supabase_client import _use_supabase; print('OK' if _use_supabase() else 'NOT SET')"
+
+  4. Launch app:
+     ./start.sh
+     → Choose 1 for Streamlit UI
+
+================================================================================
