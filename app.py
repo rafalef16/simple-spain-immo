@@ -518,32 +518,158 @@ def _supabase_fts(query: str, limit: int = 50) -> list[dict]:
         return []
 
 
+def _contains_pattern(text: str, regex_pattern: str) -> bool:
+    return bool(re.search(regex_pattern, text.lower()))
+
+
+def _search_with_synonyms(data: list[dict], selected_groups: dict) -> list[dict]:
+    filtered = data.copy()
+    for group_data in selected_groups.values():
+        combined = "|".join(group_data["patterns"])
+        filtered = [
+            item for item in filtered
+            if _contains_pattern(item.get("description_clean", ""), combined)
+        ]
+    return filtered
+
+
+def _search_freetext(data: list[dict], query: str) -> list[dict]:
+    from modules.search_terms import SEARCH_SYNONYMS
+    if "|" in query:
+        logic, terms = "OR", [t.strip() for t in query.split("|")]
+    else:
+        logic, terms = "AND", re.split(r"[\s\+]+", query.strip())
+
+    expanded: list[str] = []
+    for term in terms:
+        tc = term.lower().strip()
+        if not tc:
+            continue
+        found = False
+        for gd in SEARCH_SYNONYMS.values():
+            if tc in [t.lower() for t in gd["terms"]]:
+                expanded.extend(gd["patterns"])
+                found = True
+                break
+        if not found:
+            expanded.append(re.escape(tc))
+
+    if not expanded:
+        return data
+
+    filtered = data.copy()
+    if logic == "AND":
+        for pat in expanded:
+            filtered = [l for l in filtered if _contains_pattern(l.get("description_clean", ""), pat)]
+    else:
+        combined = "|".join(expanded)
+        filtered = [l for l in filtered if _contains_pattern(l.get("description_clean", ""), combined)]
+    return filtered
+
+
+def _filter_agua(data: list[dict], mode: str) -> list[dict]:
+    from modules.search_terms import AGUA_CON_PATTERNS, AGUA_SIN_PATTERNS, AGUA_ANY
+    if mode == "Con agua":
+        pat = "|".join(AGUA_CON_PATTERNS)
+        return [l for l in data if _contains_pattern(l.get("description_clean", ""), pat)]
+    if mode == "Sin agua":
+        pat = "|".join(AGUA_SIN_PATTERNS)
+        return [l for l in data if _contains_pattern(l.get("description_clean", ""), pat)]
+    if mode == "Non mentionné":
+        return [l for l in data if not _contains_pattern(l.get("description_clean", ""), AGUA_ANY)]
+    return data
+
+
+def _filter_luz(data: list[dict], mode: str) -> list[dict]:
+    from modules.search_terms import LUZ_CON_PATTERNS, LUZ_SIN_PATTERNS, LUZ_ANY
+    if mode == "Con luz":
+        pat = "|".join(LUZ_CON_PATTERNS)
+        return [l for l in data if _contains_pattern(l.get("description_clean", ""), pat)]
+    if mode == "Sin luz":
+        pat = "|".join(LUZ_SIN_PATTERNS)
+        return [l for l in data if _contains_pattern(l.get("description_clean", ""), pat)]
+    if mode == "Non mentionné":
+        return [l for l in data if not _contains_pattern(l.get("description_clean", ""), LUZ_ANY)]
+    return data
+
+
 def page_recherche(data: list[dict]):
-    st.header("🔍 Recherche")
+    from modules.search_terms import SEARCH_SYNONYMS
 
-    q = st.text_input(
-        "Recherche plein-texte",
-        placeholder="ex: finca piscine, licencia turistica, vue mer…",
-        help="Recherche dans le titre, la description et la ville",
-    )
+    st.header("🔍 Recherche granulaire")
 
-    use_supa = False
-    try:
-        from modules.supabase_client import _use_supabase
-        use_supa = _use_supabase()
-    except Exception:
-        pass
+    # ── SLIDER PRIX ───────────────────────────────────────────────────────────
+    prices = [l["prix_eur"] for l in data if l.get("prix_eur")]
+    if prices:
+        p_min, p_max = int(min(prices)), int(max(prices))
+        if p_min < p_max:
+            price_range = st.slider(
+                "💶 Budget (€)",
+                min_value=p_min, max_value=p_max,
+                value=(p_min, p_max),
+                step=5_000, format="%d €",
+            )
+            data = [l for l in data if price_range[0] <= (l.get("prix_eur") or 0) <= price_range[1]]
 
-    if q and use_supa:
-        results = _supabase_fts(q)
-        if results:
-            st.caption(f"🗄️ Supabase FTS — **{len(results)}** résultats")
-            _grille(results)
-            return
+    st.caption(f"**{len(data)}** biens dans la sélection courante")
+    st.divider()
 
-    results = _text_filter(data, q)
-    st.info(f"**{len(results)} annonces** — {('filtrées par: \"' + q + '\"') if q else 'tous les filtres sidebar'}")
-    _grille(results)
+    # ── FILTRES EAU / ÉLECTRICITÉ ─────────────────────────────────────────────
+    col_eau, col_luz = st.columns(2)
+    with col_eau:
+        eau_mode = st.selectbox("💧 Eau", ["Toutes", "Con agua", "Sin agua", "Non mentionné"], key="eau_mode")
+    with col_luz:
+        luz_mode = st.selectbox("⚡ Électricité", ["Toutes", "Con luz", "Sin luz", "Non mentionné"], key="luz_mode")
+
+    data = _filter_agua(data, eau_mode)
+    data = _filter_luz(data, luz_mode)
+
+    st.divider()
+
+    # ── TABS ──────────────────────────────────────────────────────────────────
+    tab1, tab2 = st.tabs(["🏷️ Tags (facile)", "⌨️ Texte libre (avancé)"])
+    results = data
+
+    with tab1:
+        st.subheader("Clique sur les catégories recherchées (AND)")
+        selected_groups: dict = {}
+        cols = st.columns(3)
+        for i, (gk, gd) in enumerate(SEARCH_SYNONYMS.items()):
+            with cols[i % 3]:
+                if st.checkbox(gd["label"], key=f"chip_{gk}"):
+                    selected_groups[gk] = gd
+
+        st.divider()
+        if selected_groups:
+            st.write("**Filtres actifs :**")
+            for gd in selected_groups.values():
+                st.caption(f"**{gd['label']}** → {' | '.join(gd['terms'][:4])}")
+            results = _search_with_synonyms(data, selected_groups)
+        else:
+            results = data
+        st.write(f"**{len(results)} résultats**")
+
+    with tab2:
+        st.subheader("Texte libre")
+        st.caption("Syntaxe : `mot1 + mot2` (AND) · `mot1 | mot2` (OR)")
+        query = st.text_area(
+            "Requête",
+            placeholder="piscina + vista + vallado\n\nou: piscina | balsa (l'une ou l'autre)",
+            height=80, label_visibility="collapsed",
+        )
+        if query.strip():
+            results = _search_freetext(data, query)
+            st.write(f"**{len(results)} résultats**")
+        else:
+            results = data
+
+    # ── RÉSULTATS ─────────────────────────────────────────────────────────────
+    if results:
+        st.divider()
+        st.subheader(f"📋 Résultats ({len(results)})")
+        _grille(results)
+    else:
+        st.info("Aucun résultat — essayez d'autres critères.")
 
 
 # ── PAGE CLIENTS ──────────────────────────────────────────────────────────────
