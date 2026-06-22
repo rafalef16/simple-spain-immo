@@ -1,5 +1,7 @@
 import json
 import os
+import re
+import hashlib
 from pathlib import Path
 from datetime import datetime
 from typing import Optional
@@ -121,6 +123,60 @@ def load_processed_urls(name: str) -> set:
     return {item.get("url", "") for item in load(name)}
 
 
+def _extract_ville(item: dict) -> Optional[str]:
+    """Ville par regex sur titre/URL (le champ HTML varie selon chaque CMS)."""
+    if item.get("ville") or item.get("localisation"):
+        return item.get("ville") or item.get("localisation")
+    title = item.get("title") or ""
+    # "... en venta en Xerta, Tarragona" / "... en Roquetes" / "· Cambrils ..."
+    m = re.search(r"\ben\s+(?:venta\s+(?:en\s+)?)?([A-ZÁÉÍÓÚ][\wáéíóúñ'’\-]+(?:\s+[A-ZÁÉÍÓÚ][\wáéíóúñ'’\-]+)?)", title)
+    if m:
+        return m.group(1).strip()
+    # slug d'URL : /.../la-rapita/... ou -en-roquetes-es...
+    url = item.get("url") or ""
+    m = re.search(r"-en-([a-záéíóúñ\-]+?)-es\d", url) or re.search(r"/venta/([a-záéíóúñ\-]+)/", url)
+    if m:
+        return m.group(1).replace("-", " ").title()
+    return None
+
+
+# Mapping schéma scrape_v2 (data/v2) → schéma attendu par l'affichage Streamlit.
+_DISPLAY_MAP = {
+    "price_eur": "prix_eur",
+    "image": "cover_image_url",
+    "description": "description_clean",
+    "scrap_ts": "scrap_timestamp",
+}
+
+
+def _normalize_for_display(item: dict) -> dict:
+    """Harmonise un record v2 vers le schéma des cartes Streamlit (idempotent)."""
+    out = dict(item)
+    for src, dst in _DISPLAY_MAP.items():
+        if out.get(dst) in (None, "") and out.get(src) not in (None, ""):
+            out[dst] = out[src]
+    # Surfaces : bâti (casita) → construction_m2 ; terrain → terrain_m2.
+    if out.get("construction_m2") in (None, "") and out.get("built_m2") not in (None, ""):
+        out["construction_m2"] = out["built_m2"]
+    # Records hérités sans built/terrain explicites : surface_m2 → terrain par défaut.
+    if (out.get("terrain_m2") in (None, "") and out.get("built_m2") in (None, "")
+            and out.get("surface_m2") not in (None, "")):
+        out["terrain_m2"] = out["surface_m2"]
+    # ville
+    if not out.get("ville"):
+        v = _extract_ville(out)
+        if v:
+            out["ville"] = v
+    # site_family / id / photos pour cohérence des cartes
+    if not out.get("site_family"):
+        out["site_family"] = out.get("agence") or out.get("site")
+    if not out.get("id") and out.get("url"):
+        out["id"] = hashlib.sha256(out["url"].encode()).hexdigest()
+    if not out.get("photos") and out.get("cover_image_url"):
+        out["photos"] = [out["cover_image_url"]]
+    return out
+
+
 def merge_all_to_master() -> list[dict]:
     """Merge all per-site JSON files into master.json with dedup."""
     master: dict[str, dict] = {}
@@ -129,21 +185,23 @@ def merge_all_to_master() -> list[dict]:
     if master_path.exists():
         try:
             for item in json.loads(master_path.read_text(encoding="utf-8")):
-                master[item.get("id", item.get("url", ""))] = item
+                master[item.get("url") or item.get("id", "")] = _normalize_for_display(item)
         except Exception:
             pass
 
-    for p in DATA_DIR.glob("*.json"):
-        if p.name in ("master.json", "clients.json"):
+    for p in (DATA_DIR / "v2").glob("*.json"):
+        if p.name in ("master.json", "clients.json", "session_pool.json"):
             continue
         try:
             items = json.loads(p.read_text(encoding="utf-8"))
         except Exception:
             continue
+        if not isinstance(items, list):
+            continue
         for item in items:
-            key = item.get("id") or item.get("url", "")
+            key = item.get("url") or item.get("id", "")
             if key not in master:
-                master[key] = item
+                master[key] = _normalize_for_display(item)
 
     result = sorted(master.values(), key=lambda x: x.get("scrap_timestamp", ""), reverse=True)
     _atomic_write(master_path, result)
@@ -168,11 +226,13 @@ def load_master() -> list[dict]:
 
 def scrape_stats() -> dict:
     stats = {"total": 0, "by_site": {}, "last_run": None}
-    for p in DATA_DIR.glob("*.json"):
-        if p.name in ("master.json", "clients.json"):
+    for p in (DATA_DIR / "v2").glob("*.json"):
+        if p.name in ("master.json", "clients.json", "session_pool.json"):
             continue
         try:
             items = json.loads(p.read_text(encoding="utf-8"))
+            if not isinstance(items, list):
+                continue
             site = p.stem
             stats["by_site"][site] = len(items)
             stats["total"] += len(items)

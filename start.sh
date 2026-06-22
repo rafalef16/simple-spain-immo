@@ -31,11 +31,11 @@ $PYTHON -c "import streamlit, playwright" 2>/dev/null || {
 echo ""
 echo "Que voulez-vous faire ?"
 echo "  1) Lancer l'interface Streamlit (UI)"
-echo "  2) Lancer le scraper complet (toutes sources)"
-echo "  3) Lancer le scraper sans proxy (Mobilia + ThinkSpain + Kyero)"
-echo "  4) Lancer le scraper proxy uniquement (Fotocasa + Idealista)"
+echo "  2) Lancer le scraper complet (toutes sources, EVOMI actif partout)"
+echo "  3) Lancer le scraper sources locales (Mobilia + ThinkSpain + Kyero + Regional, EVOMI actif)"
+echo "  4) Lancer le scraper portails (Fotocasa + Idealista, EVOMI actif)"
 echo "  5) Fusionner les données JSON → master.json"
-echo "  6) TEST — 20 URLs par source (dry-run, toutes sources)"
+echo "  6) TEST — dry-run toutes sources (EVOMI actif, limite annonces/site)"
 echo "  7) DIAG — 1 annonce par site local (mobilia+regional), dry-run"
 echo "  8) Quitter"
 echo ""
@@ -47,30 +47,33 @@ case $choice in
     $STREAMLIT run app.py --server.port 8501
     ;;
   2)
-    echo "🕷️  Scraper complet..."
-    $PYTHON pipeline.py --sites all
+    echo "🕷️  Scraper complet (scrape_v2 — EVOMI + 2captcha)..."
+    $PYTHON scrape_v2.py --site all --limit 10
+    $PYTHON -c "from modules.db import merge_all_to_master; merge_all_to_master()"
     ;;
   3)
-    echo "🕷️  Scraper sans proxy..."
-    $PYTHON pipeline.py --sites mobilia thinkspain kyero regional
+    echo "🕷️  Scraper sources locales (Mobilia)..."
+    $PYTHON scrape_v2.py --site mobilia --limit 10
+    $PYTHON -c "from modules.db import merge_all_to_master; merge_all_to_master()"
     ;;
   4)
-    echo "🕷️  Scraper avec proxy EVOMI..."
-    $PYTHON pipeline.py --sites fotocasa idealista
+    echo "🕷️  Scraper portails (Fotocasa + Idealista, EVOMI + 2captcha)..."
+    $PYTHON scrape_v2.py --site fotocasa --limit 10
+    $PYTHON scrape_v2.py --site idealista --limit 10
+    $PYTHON -c "from modules.db import merge_all_to_master; merge_all_to_master()"
     ;;
   5)
-    echo "🔀 Fusion des données..."
-    $PYTHON pipeline.py --merge-only
+    echo "🔀 Fusion des données → master.json..."
+    $PYTHON -c "from modules.db import merge_all_to_master; print(len(merge_all_to_master()), 'annonces')"
     ;;
   6)
-    echo "🧪 TEST — 20 URLs par source, dry-run (aucune écriture disque)..."
-    echo "   Sources proxy  : fotocasa, idealista, thinkspain, kyero"
-    echo "   Sources locales: mobilia, regional"
-    $PYTHON pipeline.py --sites fotocasa idealista thinkspain kyero mobilia regional --limit 20 --dry-run
+    echo "🧪 TEST — 2 URLs par source (scrape_v2, toutes sources)..."
+    $PYTHON scrape_v2.py --site all --limit 2
+    $PYTHON -c "from modules.db import merge_all_to_master; merge_all_to_master()"
     ;;
   7)
-    echo "🔬 DIAG — 1 annonce par site local, dry-run..."
-    $PYTHON pipeline.py --sites mobilia regional --limit 1 --dry-run
+    echo "🔬 DIAG — 1 annonce Mobilia..."
+    $PYTHON scrape_v2.py --site mobilia --limit 1
     ;;
   *)
     echo "Au revoir."

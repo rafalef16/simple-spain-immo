@@ -126,6 +126,39 @@ SEARCH_SYNONYMS = {
             r"cochera",
         ],
     },
+    "casa": {
+        "label": "🏡 Casa / caseta de campo",
+        "terms": ["casa", "casa rural", "caseta", "caseta de campo", "cabaña", "vivienda", "masía"],
+        "patterns": [
+            r"\bcasa\b",
+            r"casa\s+rural",
+            r"caseta(?:\s+de\s+campo)?",
+            r"caba[ñn]a",
+            r"vivienda",
+            r"mas[ií]a",
+        ],
+    },
+    "almacen": {
+        "label": "📦 Almacén / annexe",
+        "terms": ["almacén", "almacen", "trastero", "cobertizo", "establo", "corral"],
+        "patterns": [
+            r"almac[eé]n",
+            r"trastero",
+            r"cobertiz[oa]",
+            r"establo",
+            r"corral",
+        ],
+    },
+    "surface_built": {
+        "label": "📐 Surface bâtie (NN m²)",
+        "terms": ["m² construidos", "edificados", "vivienda de X m²", "construida"],
+        "patterns": [
+            r"\d+\s*m[²2]",                       # toute surface chiffrée en m²
+            r"construid[oa]s?",
+            r"edificad[oa]s?",
+            r"superficie\s+(?:construida|edificada|[uú]til)",
+        ],
+    },
 }
 
 # ── Patterns agua / luz (utilisés directement dans app.py) ──────────────────

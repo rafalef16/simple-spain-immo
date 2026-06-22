@@ -147,9 +147,9 @@ def _sidebar_filters(all_data: list[dict]) -> tuple[list[dict], str]:
 
         # Villes
         villes_raw = sorted({
-            l.get("ville_canonical") or l.get("ville") or ""
+            l.get("ville") or l.get("ville_canonical") or ""
             for l in all_data
-            if l.get("ville_canonical") or l.get("ville")
+            if l.get("ville") or l.get("ville_canonical")
         })
         villes_raw = [v for v in villes_raw if v]
         villes_sel = st.multiselect("Villes", villes_raw)
@@ -189,7 +189,7 @@ def _sidebar_filters(all_data: list[dict]) -> tuple[list[dict], str]:
         data = [l for l in data if (_price_m2(l) or 999_999) <= pm2_max]
     if villes_sel:
         data = [l for l in data
-                if (l.get("ville_canonical") or l.get("ville") or "") in villes_sel]
+                if (l.get("ville") or l.get("ville_canonical") or "") in villes_sel]
     if sources_sel:
         data = [l for l in data
                 if (l.get("site_family") or l.get("site") or "") in sources_sel]
@@ -207,7 +207,7 @@ def _sidebar_filters(all_data: list[dict]) -> tuple[list[dict], str]:
             l for l in data
             if ql in (l.get("title") or "").lower()
             or ql in (l.get("description_clean") or "").lower()
-            or ql in (l.get("ville_canonical") or l.get("ville") or "").lower()
+            or ql in (l.get("ville") or l.get("ville_canonical") or "").lower()
         ]
 
     # Sort
@@ -238,7 +238,7 @@ def page_carte(data: list[dict]):
     # Résoudre coordonnées
     geo_listings = []
     for l in data:
-        city = l.get("ville_canonical") or l.get("ville") or ""
+        city = l.get("ville") or l.get("ville_canonical") or ""
         coords = resolve_coords(city)
         if coords:
             geo_listings.append((l, coords))
@@ -265,7 +265,7 @@ def page_carte(data: list[dict]):
         price_str = _fmt_price(l.get("prix_eur"))
         terrain_str = _fmt_m2(l.get("terrain_m2"))
         const_str = _fmt_m2(l.get("construction_m2"))
-        city = l.get("ville_canonical") or l.get("ville") or "—"
+        city = l.get("ville") or l.get("ville_canonical") or "—"
         title = (l.get("title") or "Annonce")[:80]
         site = (l.get("site") or "—").upper()
         url = l.get("url") or "#"
@@ -309,23 +309,23 @@ def page_carte(data: list[dict]):
 
 
 # ── GRILLE DE DÉTAIL ──────────────────────────────────────────────────────────
-def _grille(data: list[dict]):
+def _grille(data: list[dict], active_groups: dict | None = None):
     if not data:
         st.info("Aucune annonce ne correspond aux filtres.")
         return
 
-    cols = st.columns(2)
-    for idx, l in enumerate(data):
-        with cols[idx % 2]:
-            _card(l)
+    # 1 carte par ligne horizontale
+    for l in data:
+        _card(l, active_groups)
 
 
-def _card(l: dict):
+def _card(l: dict, active_groups: dict | None = None, select_client: str | None = None,
+          ctx: str = ""):
     ptype     = _detect_type(l)
     is_tour   = _is_tourist(l)
     days      = _days_ago(l.get("scrap_timestamp"))
     price_m2  = _price_m2(l)
-    city      = l.get("ville_canonical") or l.get("ville") or "—"
+    city      = l.get("ville") or l.get("ville_canonical") or "—"
     coords    = resolve_coords(city)
     site      = (l.get("site") or "—")
     family    = (l.get("site_family") or "—")
@@ -334,118 +334,58 @@ def _card(l: dict):
     desc      = l.get("description_clean") or ""
     url       = l.get("url") or "#"
     title     = l.get("title") or "Sans titre"
-    ts        = (l.get("scrap_timestamp") or "")[:10]
-    has_solar = "solar" in desc.lower()
-    photos    = l.get("photos") or []
-    dedup_h   = (l.get("id") or "")  # SHA256 dedup hash (full)
+    terrain   = l.get("terrain_m2")
+    constr    = l.get("construction_m2")
+    beds      = l.get("bedrooms")
+    baths     = l.get("bathrooms")
+    img       = l.get("cover_image_url")
 
-    # Badge row
+    # Badges minimaux (type + signaux utiles ; le site va dans les FILTRES, pas la carte)
     type_cls = {"finca": "green", "casa": "blue", "touristic": "orange"}.get(ptype, "grey")
     badges = _badge_html(ptype.upper(), type_cls)
-    badges += _badge_html(site.upper(), "blue")
     if is_tour:
         badges += _badge_html("🏖️ TOURIST", "orange")
-    if has_solar:
-        badges += _badge_html("🌞 SOLAR", "red")
     if days is not None and days < 2:
         badges += _badge_html("🆕 NOUVEAU", "new")
-    if photos:
-        badges += _badge_html(f"📷 {len(photos)}", "grey")
 
     with st.container(border=True):
-        st.markdown(badges, unsafe_allow_html=True)
-        st.markdown(f"### {title}")
-
-        # Prix + meta
-        col_p, col_r, col_d = st.columns([2, 1, 1])
-        col_p.markdown(
-            f'<span class="price-big">{_fmt_price(l.get("prix_eur"))}</span>'
-            f'<span style="font-size:0.85em;color:#888;margin-left:8px">'
-            f'{l.get("prix_display") or ""}</span>',
-            unsafe_allow_html=True
-        )
-        col_r.markdown(
-            f'<div class="metric-label">Réf</div>'
-            f'<div class="metric-val">{ref}</div>',
-            unsafe_allow_html=True
-        )
-        col_d.markdown(
-            f'<div class="metric-label">Scrapé</div>'
-            f'<div class="metric-val">{ts}</div>',
-            unsafe_allow_html=True
+        # En-tête : titre + prix
+        head_l, head_r = st.columns([3, 1])
+        head_l.markdown(badges, unsafe_allow_html=True)
+        head_l.markdown(f"### {title}")
+        head_r.markdown(
+            f'<div class="price-big" style="text-align:right">{_fmt_price(l.get("prix_eur"))}</div>',
+            unsafe_allow_html=True,
         )
 
-        st.divider()
+        # Ligne méta : uniquement les champs réellement présents (zéro bruit)
+        bits = []
+        if terrain: bits.append(f"📐 {_fmt_m2(terrain)} terrain")
+        if constr:  bits.append(f"🏠 {_fmt_m2(constr)} bâti")
+        if beds:    bits.append(f"🛏️ {beds}")
+        if baths:   bits.append(f"🚿 {baths}")
+        if city and city != "—": bits.append(f"📍 {city}")
+        if bits:
+            st.caption(" · ".join(bits))
 
-        # Métriques 3 colonnes — 15 variables obligatoires
-        c1, c2, c3 = st.columns(3)
+        # Image PETITE à gauche + description complète (toujours visible) à droite
+        img_col, desc_col = st.columns([1, 3])
+        with img_col:
+            if img:
+                try:
+                    st.image(img, width=150)
+                except Exception:
+                    st.caption("📷")
+            else:
+                st.caption("📷 —")
+        with desc_col:
+            if desc:
+                st.write(desc)
+            else:
+                st.caption("_Pas de description disponible_")
 
-        with c1:
-            st.markdown('<div class="metric-label">Terrain</div>'
-                        f'<div class="metric-val">{_fmt_m2(l.get("terrain_m2"))}</div>',
-                        unsafe_allow_html=True)
-            st.markdown('<div class="metric-label">Bâti</div>'
-                        f'<div class="metric-val">{_fmt_m2(l.get("construction_m2"))}</div>',
-                        unsafe_allow_html=True)
-            st.markdown('<div class="metric-label">Prix/m² terrain</div>'
-                        f'<div class="metric-val">{f"{price_m2} €/m²" if price_m2 else "—"}</div>',
-                        unsafe_allow_html=True)
-
-        with c2:
-            st.markdown(f'<div class="metric-label">Ville</div>'
-                        f'<div class="metric-val">{city}</div>',
-                        unsafe_allow_html=True)
-            coord_str = f"{coords[0]:.4f}, {coords[1]:.4f}" if coords else "—"
-            st.markdown(f'<div class="metric-label">GPS</div>'
-                        f'<div class="metric-val" style="font-size:0.85em">{coord_str}</div>',
-                        unsafe_allow_html=True)
-            st.markdown(f'<div class="metric-label">Type</div>'
-                        f'<div class="metric-val">{ptype}</div>',
-                        unsafe_allow_html=True)
-
-        with c3:
-            st.markdown(f'<div class="metric-label">Source</div>'
-                        f'<div class="metric-val">{site}</div>',
-                        unsafe_allow_html=True)
-            st.markdown(f'<div class="metric-label">Famille</div>'
-                        f'<div class="metric-val">{family}</div>',
-                        unsafe_allow_html=True)
-            st.markdown(f'<div class="metric-label">ID (SHA256)</div>'
-                        f'<div class="metric-val" style="font-family:monospace;font-size:0.8em">'
-                        f'{uid}…</div>',
-                        unsafe_allow_html=True)
-
-        # Image principale
-        if l.get("cover_image_url"):
-            try:
-                st.image(l["cover_image_url"], use_column_width=True)
-            except Exception:
-                st.caption("📷 Image indisponible")
-        else:
-            st.caption("📷 Pas d'image")
-
-        # Galerie photos
-        if len(photos) > 1:
-            with st.expander(f"📸 Galerie ({len(photos)} photos)"):
-                gcols = st.columns(3)
-                for pi, photo_url in enumerate(photos[:12]):
-                    with gcols[pi % 3]:
-                        try:
-                            st.image(photo_url, use_column_width=True)
-                        except Exception:
-                            pass
-
-        # Description
-        if desc:
-            short = desc[:2000]
-            with st.expander("📝 Description"):
-                st.write(short)
-                if len(desc) > 2000:
-                    if st.button("Lire tout", key=f"full_{uid}_{hash(url)}"):
-                        st.write(desc)
-
-        # ── Traductions Claude ────────────────────────────────────────────────
-        tr_key = f"tr_{uid}_{hash(url)}"
+        # ── Traduction (repliée pour ne pas encombrer) ────────────────────────
+        tr_key = f"tr_{ctx}_{uid}_{hash(url)}"
         with st.expander("🌍 Traduction"):
             tr_col1, tr_col2, tr_col3 = st.columns(3)
             lang_chosen = None
@@ -474,6 +414,30 @@ def _card(l: dict):
                 else:
                     st.warning("Clé ANTHROPIC_API_KEY absente ou erreur API.")
 
+        # ── Désactivation par annonce : kicker un faux positif d'un filtre actif ──
+        if active_groups:
+            st.caption("⚠️ Faux positif ? Retirer cette annonce d'un filtre :")
+            kick_cols = st.columns(len(active_groups))
+            for ki, (gk, gd) in enumerate(active_groups.items()):
+                with kick_cols[ki]:
+                    if st.button(f"❌ {gd['label']}", key=f"kick_{ctx}_{gk}_{uid}_{hash(url)}"):
+                        _toggle_exclusion(gk, url)
+                        st.rerun()
+
+        # ── Présélection par client (fiche client) ───────────────────────────
+        if select_client:
+            selected = url in _client_selection(select_client)
+            if selected:
+                if st.button("✅ Dans la sélection — retirer", key=f"csel_{ctx}_{uid}_{hash(url)}",
+                             type="secondary"):
+                    _toggle_client_selection(select_client, url)
+                    st.rerun()
+            else:
+                if st.button("➕ Ajouter à la sélection", key=f"csel_{ctx}_{uid}_{hash(url)}",
+                             type="primary"):
+                    _toggle_client_selection(select_client, url)
+                    st.rerun()
+
         # Lien
         st.markdown(
             f'<a href="{url}" target="_blank" '
@@ -494,7 +458,7 @@ def _text_filter(data: list[dict], query: str) -> list[dict]:
         l for l in data
         if ql in (l.get("title") or "").lower()
         or ql in (l.get("description_clean") or "").lower()
-        or ql in (l.get("ville_canonical") or l.get("ville") or "").lower()
+        or ql in (l.get("ville") or l.get("ville_canonical") or "").lower()
         or ql in (l.get("ref") or "").lower()
     ]
 
@@ -522,13 +486,42 @@ def _contains_pattern(text: str, regex_pattern: str) -> bool:
     return bool(re.search(regex_pattern, text.lower()))
 
 
+# ── Exclusions manuelles par filtre (faux positifs kické depuis l'annonce) ────
+_EXCL_FILE = Path(__file__).parent / "data" / "filter_exclusions.json"
+
+
+def _load_exclusions() -> dict:
+    if not _EXCL_FILE.exists():
+        return {}
+    try:
+        return json.loads(_EXCL_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _toggle_exclusion(group_key: str, url: str):
+    """Ajoute/retire une annonce de la liste d'exclusion d'un filtre."""
+    excl = _load_exclusions()
+    lst = excl.setdefault(group_key, [])
+    if url in lst:
+        lst.remove(url)
+    else:
+        lst.append(url)
+    tmp = _EXCL_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(excl, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(_EXCL_FILE)
+
+
 def _search_with_synonyms(data: list[dict], selected_groups: dict) -> list[dict]:
+    excl = _load_exclusions()
     filtered = data.copy()
-    for group_data in selected_groups.values():
+    for gk, group_data in selected_groups.items():
         combined = "|".join(group_data["patterns"])
+        kicked = set(excl.get(gk, []))
         filtered = [
             item for item in filtered
             if _contains_pattern(item.get("description_clean", ""), combined)
+            and item.get("url") not in kicked   # faux positifs retirés à la main
         ]
     return filtered
 
@@ -614,6 +607,38 @@ def page_recherche(data: list[dict]):
     st.caption(f"**{len(data)}** biens dans la sélection courante")
     st.divider()
 
+    # ── FILTRE SOURCE (Kyero · Fotocasa · Idealista · ThinkSpain · Mobilia …) ──
+    src_labels = {"kyero": "🟣 Kyero", "fotocasa": "🔵 Fotocasa", "idealista": "🟢 Idealista",
+                  "thinkspain": "🟠 ThinkSpain", "mobilia": "🟡 Mobilia (38 agences)",
+                  "finquesmar": "🔴 FinquesMar"}
+    present = sorted({(l.get("site") or "").lower() for l in data if l.get("site")})
+    src_options = [src_labels.get(s, s.title()) for s in present]
+    _lbl2site = {src_labels.get(s, s.title()): s for s in present}
+    src_sel = st.multiselect("📡 Sources", src_options, key="src_filter")
+    if src_sel:
+        wanted = {_lbl2site[lbl] for lbl in src_sel}
+        data = [l for l in data if (l.get("site") or "").lower() in wanted]
+
+    # ── FILTRE SURFACES (discrimination casita ≤400 m² / terrain >400 m²) ──────
+    col_s1, col_s2, col_s3 = st.columns(3)
+    with col_s1:
+        surf_kind = st.selectbox("📐 Type de surface", ["Toutes", "Avec casita (bâti)",
+                                 "Terrain nu (sans bâti)"], key="surf_kind")
+    with col_s2:
+        ter_min = st.number_input("Terrain min (m²)", min_value=0, value=0, step=500, key="ter_min")
+    with col_s3:
+        bat_min = st.number_input("Bâti min (m²)", min_value=0, value=0, step=10, key="bat_min")
+    if surf_kind == "Avec casita (bâti)":
+        data = [l for l in data if (l.get("construction_m2") or 0) > 0]
+    elif surf_kind == "Terrain nu (sans bâti)":
+        data = [l for l in data if not (l.get("construction_m2") or 0)]
+    if ter_min:
+        data = [l for l in data if (l.get("terrain_m2") or 0) >= ter_min]
+    if bat_min:
+        data = [l for l in data if (l.get("construction_m2") or 0) >= bat_min]
+
+    st.divider()
+
     # ── FILTRES EAU / ÉLECTRICITÉ ─────────────────────────────────────────────
     col_eau, col_luz = st.columns(2)
     with col_eau:
@@ -627,8 +652,13 @@ def page_recherche(data: list[dict]):
     st.divider()
 
     # ── TABS ──────────────────────────────────────────────────────────────────
+    # Streamlit exécute le contenu des DEUX onglets à chaque rerun. On calcule donc
+    # chaque filtre dans sa propre variable, puis on COMBINE à la fin — sans qu'un
+    # onglet vide n'écrase le résultat de l'autre (bug « 18 résultats mais tout
+    # reste affiché »).
     tab1, tab2 = st.tabs(["🏷️ Tags (facile)", "⌨️ Texte libre (avancé)"])
-    results = data
+    res_tags = None
+    res_free = None
 
     with tab1:
         st.subheader("Clique sur les catégories recherchées (AND)")
@@ -644,10 +674,21 @@ def page_recherche(data: list[dict]):
             st.write("**Filtres actifs :**")
             for gd in selected_groups.values():
                 st.caption(f"**{gd['label']}** → {' | '.join(gd['terms'][:4])}")
-            results = _search_with_synonyms(data, selected_groups)
-        else:
-            results = data
-        st.write(f"**{len(results)} résultats**")
+            res_tags = _search_with_synonyms(data, selected_groups)
+            # ── Liste d'exclusion dynamique : faux positifs retirés à la main ──
+            excl = _load_exclusions()
+            active_excl = {gk: excl.get(gk, []) for gk in selected_groups if excl.get(gk)}
+            if active_excl:
+                with st.expander(f"🚫 Exclusions manuelles ({sum(len(v) for v in active_excl.values())})"):
+                    for gk, urls in active_excl.items():
+                        st.caption(f"**{selected_groups[gk]['label']}** — {len(urls)} annonce(s) retirée(s)")
+                        for u in urls:
+                            cu, cb = st.columns([5, 1])
+                            cu.write(f"`{u[:70]}`")
+                            if cb.button("↩️", key=f"restore_{gk}_{hash(u)}", help="Réintégrer"):
+                                _toggle_exclusion(gk, u)
+                                st.rerun()
+            st.write(f"**{len(res_tags)} résultats**")
 
     with tab2:
         st.subheader("Texte libre")
@@ -658,16 +699,26 @@ def page_recherche(data: list[dict]):
             height=80, label_visibility="collapsed",
         )
         if query.strip():
-            results = _search_freetext(data, query)
-            st.write(f"**{len(results)} résultats**")
-        else:
-            results = data
+            res_free = _search_freetext(data, query)
+            st.write(f"**{len(res_free)} résultats**")
+
+    # Combinaison : intersection si les deux actifs, sinon celui qui est actif.
+    if res_tags is not None and res_free is not None:
+        free_urls = {l.get("url") for l in res_free}
+        results = [l for l in res_tags if l.get("url") in free_urls]
+    elif res_tags is not None:
+        results = res_tags
+    elif res_free is not None:
+        results = res_free
+    else:
+        results = data
 
     # ── RÉSULTATS ─────────────────────────────────────────────────────────────
     if results:
         st.divider()
         st.subheader(f"📋 Résultats ({len(results)})")
-        _grille(results)
+        # Les filtres chips actifs permettent de kicker un faux positif par annonce
+        _grille(results, active_groups=selected_groups if selected_groups else None)
     else:
         st.info("Aucun résultat — essayez d'autres critères.")
 
@@ -689,6 +740,68 @@ def _save_clients(clients: list[dict]):
     tmp = _CLIENTS_FILE.with_suffix(".tmp")
     tmp.write_text(json.dumps(clients, ensure_ascii=False, indent=2), encoding="utf-8")
     tmp.replace(_CLIENTS_FILE)
+
+
+def _client_selection(name: str) -> list[str]:
+    """URLs présélectionnées pour un client (persistées dans clients.json)."""
+    for c in _load_clients():
+        if c["name"] == name:
+            return c.get("selected_urls") or []
+    return []
+
+
+def _toggle_client_selection(name: str, url: str):
+    """Ajoute/retire une annonce de la sélection d'un client."""
+    clients = _load_clients()
+    for c in clients:
+        if c["name"] == name:
+            sel = c.setdefault("selected_urls", [])
+            if url in sel:
+                sel.remove(url)
+            else:
+                sel.append(url)
+            break
+    _save_clients(clients)
+
+
+def _property_map(listings: list[dict], height: int = 430):
+    """Mini-carte folium des biens fournis (réutilise le rendu de la page Carte)."""
+    geo = []
+    for l in listings:
+        city = l.get("ville") or l.get("ville_canonical") or ""
+        coords = resolve_coords(city)
+        if coords:
+            geo.append((l, coords))
+    if not geo:
+        st.caption("📍 Aucun bien géolocalisable dans la sélection.")
+        return
+    m = folium.Map(location=[40.85, 0.55], zoom_start=10,
+                   tiles="CartoDB Positron", prefer_canvas=True)
+    for l, (lat, lon) in geo:
+        price_str = _fmt_price(l.get("prix_eur"))
+        city = l.get("ville") or l.get("ville_canonical") or "—"
+        popup = (f'<b>{(l.get("title") or "Annonce")[:70]}</b><br>'
+                 f'<span style="color:#2e7d32;font-weight:700">{price_str}</span><br>'
+                 f'🏞️ {_fmt_m2(l.get("terrain_m2"))} · 🏠 {_fmt_m2(l.get("construction_m2"))}<br>'
+                 f'📍 {city}<br><a href="{l.get("url","#")}" target="_blank">Voir →</a>')
+        folium.Marker(
+            location=[lat, lon],
+            popup=folium.Popup(popup, max_width=260),
+            tooltip=f"{price_str} — {city}",
+            icon=folium.Icon(color=_marker_color(_detect_type(l)), icon="home", prefix="fa"),
+        ).add_to(m)
+    st_folium(m, width="100%", height=height, returned_objects=[])
+
+
+def _profile_summary(profile: dict):
+    """Critères du client, format compact (dropdown)."""
+    st.markdown(f"**Budget :** {_fmt_price(profile.get('budget_min'))} — {_fmt_price(profile.get('budget_max'))}")
+    st.markdown(f"**Terrain :** {_fmt_m2(profile.get('terrain_min'))} — {_fmt_m2(profile.get('terrain_max'))}")
+    st.markdown(f"**Bâti :** {_fmt_m2(profile.get('construction_min'))} — {_fmt_m2(profile.get('construction_max'))}")
+    st.markdown(f"**Types :** {', '.join(profile.get('types') or []) or '—'}")
+    st.markdown(f"**Villes :** {', '.join(profile.get('villes') or []) or '—'}")
+    st.markdown(f"**Mots-clés requis :** {', '.join(profile.get('keywords_must') or []) or '—'}")
+    st.markdown(f"**Mots-clés exclus :** {', '.join(profile.get('keywords_must_not') or []) or '—'}")
 
 
 def page_clients(all_data: list[dict]):
@@ -716,52 +829,63 @@ def page_clients(all_data: list[dict]):
         st.info("Aucun client enregistré. Créez un profil ci-dessus.")
         return
 
-    # ── Liste clients ─────────────────────────────────────────────────────────
+    # ── Cartes clients THIN (1 ligne compacte par client) ─────────────────────
+    by_url = {l.get("url"): l for l in all_data}
+    st.caption("Sélectionnez un client pour ouvrir sa fiche.")
+    cli_cols = st.columns(min(4, len(clients)))
+    for i, c in enumerate(clients):
+        with cli_cols[i % len(cli_cols)]:
+            n_sel = len(c.get("selected_urls") or [])
+            st.metric(c["name"], f"⭐ {n_sel}", help="Biens présélectionnés")
+
     client_names = [c["name"] for c in clients]
-    sel_name = st.selectbox("Client actif", client_names)
+    sel_name = st.selectbox("📂 Client actif", client_names)
     profile = next((c for c in clients if c["name"] == sel_name), None)
     if not profile:
         return
 
-    col_l, col_r = st.columns([1, 2])
-    with col_l:
-        st.subheader(f"Profil : {profile['name']}")
-        st.markdown(f"**Budget :** {_fmt_price(profile.get('budget_min'))} — {_fmt_price(profile.get('budget_max'))}")
-        st.markdown(f"**Terrain :** {_fmt_m2(profile.get('terrain_min'))} — {_fmt_m2(profile.get('terrain_max'))}")
-        st.markdown(f"**Bâti :** {_fmt_m2(profile.get('construction_min'))} — {_fmt_m2(profile.get('construction_max'))}")
-        st.markdown(f"**Types :** {', '.join(profile.get('types') or []) or '—'}")
-        st.markdown(f"**Villes :** {', '.join(profile.get('villes') or []) or '—'}")
-        st.markdown(f"**Mots-clés requis :** {', '.join(profile.get('keywords_must') or []) or '—'}")
-        st.markdown(f"**Mots-clés exclus :** {', '.join(profile.get('keywords_must_not') or []) or '—'}")
-        st.divider()
-        if st.button("🗑️ Supprimer ce client", type="secondary"):
+    # Fiche compacte : critères en dropdown + suppression
+    head_l, head_r = st.columns([4, 1])
+    with head_l:
+        with st.expander(f"📋 Critères de « {profile['name']} »"):
+            _profile_summary(profile)
+    with head_r:
+        if st.button("🗑️ Supprimer", type="secondary", key=f"del_{sel_name}"):
             clients = [c for c in clients if c["name"] != sel_name]
             _save_clients(clients)
             st.rerun()
 
-    with col_r:
-        st.subheader("Annonces correspondantes")
-        if st.button("🔍 Lancer le matching"):
+    sel_urls = _client_selection(sel_name)
+    sel_listings = [by_url[u] for u in sel_urls if u in by_url]
+
+    tab_sel, tab_match = st.tabs(
+        [f"⭐ Sélection client ({len(sel_listings)})", "🎯 Matching automatique"])
+
+    # ── Onglet SÉLECTION : carte + cartes biens (format identique à « Carte ») ─
+    with tab_sel:
+        if sel_listings:
+            st.subheader("🗺️ Carte de la sélection")
+            _property_map(sel_listings)
+            st.divider()
+            st.subheader("📋 Biens sélectionnés")
+            for l in sel_listings:
+                _card(l, select_client=sel_name, ctx="sel")
+        else:
+            st.info("Aucun bien sélectionné. Ajoutez-en depuis l'onglet « Matching ».")
+
+    # ── Onglet MATCHING : résultats en cartes complètes + bouton présélection ─
+    with tab_match:
+        if st.button("🔍 Lancer le matching", key=f"match_{sel_name}"):
+            st.session_state[f"_matches_{sel_name}"] = True
+        if st.session_state.get(f"_matches_{sel_name}"):
             from modules.client_matching import rank_listings
             with st.spinner("Matching en cours…"):
                 matches = rank_listings(all_data, profile)
             if matches:
                 st.success(f"**{len(matches)} correspondances** trouvées.")
-                for m in matches[:20]:
-                    score = m.pop("_match_score", 0)
-                    with st.container(border=True):
-                        sc1, sc2 = st.columns([3, 1])
-                        sc1.markdown(f"**{m.get('title', 'Sans titre')}**")
-                        sc2.markdown(f"Score : **{score:.0%}**")
-                        st.caption(
-                            f"{_fmt_price(m.get('prix_eur'))} | "
-                            f"{_fmt_m2(m.get('terrain_m2'))} terrain | "
-                            f"{m.get('ville_canonical') or m.get('ville') or '—'}"
-                        )
-                        st.markdown(
-                            f'<a href="{m.get("url","#")}" target="_blank">🔗 Voir</a>',
-                            unsafe_allow_html=True,
-                        )
+                for m in matches[:30]:
+                    m.pop("_match_score", None)
+                    _card(m, select_client=sel_name, ctx="match")
             else:
                 st.warning("Aucune correspondance.")
 
@@ -819,7 +943,7 @@ def page_stats(all_data: list[dict]):
     st.subheader("Top villes")
     city_data: dict[str, dict] = {}
     for l in all_data:
-        city = l.get("ville_canonical") or l.get("ville") or "—"
+        city = l.get("ville") or l.get("ville_canonical") or "—"
         if city == "—":
             continue
         if city not in city_data:
