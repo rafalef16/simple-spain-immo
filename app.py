@@ -42,15 +42,51 @@ st.markdown("""
 /* Metrics row */
 .metric-label { font-size:0.72em; color:#888; text-transform:uppercase; letter-spacing:.04em; }
 .metric-val   { font-size:1.05em; font-weight:600; color:#222; }
+/* Favori épinglé : badge encadré en rouge */
+.fav-on { display:inline-block; border:2px solid #e53935; color:#c62828;
+          background:#fff5f5; border-radius:8px; padding:2px 10px; font-weight:700;
+          font-size:0.8em; margin-bottom:6px; }
 </style>
 """, unsafe_allow_html=True)
 
 
 # ── DATA ──────────────────────────────────────────────────────────────────────
-@st.cache_data(ttl=60)
+def _city_from_title(title: str) -> str | None:
+    """Extraire la ville depuis le titre quand le champ ville est vide."""
+    if not title:
+        return None
+    try:
+        from modules.cities import CITY_MAP
+    except Exception:
+        return None
+    t = title.lower()
+    # Pattern "en <City>" ou "a <City>" dans le titre (Idealista)
+    m = re.search(r"(?i)\ben\s+([a-zà-ÿ'\-]+(?:\s+[a-zà-ÿ'\-]+){0,3})", t)
+    if m:
+        candidate = m.group(1).strip().rstrip(",")
+        if candidate in CITY_MAP:
+            return CITY_MAP[candidate]
+    # Parcourir toutes les clés connues (les plus longues d'abord pour éviter faux positifs)
+    for key in sorted(CITY_MAP, key=len, reverse=True):
+        if key in t:
+            return CITY_MAP[key]
+    return None
+
+
+@st.cache_data(ttl=43200)  # 12 h : rafraîchissement auto des nouvelles annonces
 def _load():
-    from modules.db import merge_all_to_master
-    return merge_all_to_master()
+    # Lecture : Supabase en priorité (rapide), sinon master.json — les DEUX en
+    # lecture seule (load_master n'écrit jamais le JSON). Les doublons (flag
+    # is_duplicate) sont masqués ; Supabase les exclut déjà côté requête.
+    from modules.db import load_master
+    listings = [l for l in load_master() if not l.get("is_duplicate")]
+    # Enrichissement ville : si ville absente, tenter de l'extraire du titre
+    for l in listings:
+        if not (l.get("ville") or l.get("ville_canonical")):
+            city = _city_from_title(l.get("title") or "")
+            if city:
+                l["ville_canonical"] = city
+    return listings
 
 
 # ── HELPERS ───────────────────────────────────────────────────────────────────
@@ -172,7 +208,7 @@ def _sidebar_filters(all_data: list[dict]) -> tuple[list[dict], str]:
         st.divider()
         sort_by = st.selectbox("Trier par", ["Prix ↑", "Prix ↓", "Terrain ↓", "Récent ↓", "Prix/m² ↑"])
 
-        limit = st.slider("Résultats max", 20, 500, 100)
+        limit = st.slider("Résultats max", 50, 5000, 2000, step=50)
 
     # Apply filters
     data = all_data
@@ -319,6 +355,41 @@ def _grille(data: list[dict], active_groups: dict | None = None):
         _card(l, active_groups)
 
 
+# Palette de surlignage par filtre (code couleur propre, fond doux + texte foncé).
+_HL_PALETTE = ["#fff3a0", "#b5ead7", "#c7ceea", "#ffd6a5", "#ffb3ba",
+               "#bae1ff", "#e2c2ff", "#c2f0c2", "#ffc8dd", "#d0f4de"]
+
+
+def _highlight_description(desc: str, groups: dict) -> str:
+    """Surligne dans la description les mots/expressions qui déclenchent chaque
+    filtre sélectionné, une couleur par filtre. Renvoie du HTML échappé."""
+    import html
+    from modules.search_terms import text_spans
+    colors = {gk: _HL_PALETTE[i % len(_HL_PALETTE)] for i, gk in enumerate(groups)}
+    spans: list[tuple[int, int, str]] = []
+    for gk in groups:
+        # offsets valides sur 'desc' d'origine (la normalisation préserve la longueur)
+        for s, e in text_spans(desc, gk):
+            spans.append((s, e, colors[gk]))
+    if not spans:
+        return html.escape(desc)
+    spans.sort()
+    merged, last_end = [], -1
+    for s, e, c in spans:           # non-chevauchant : la 1re couleur l'emporte
+        if s >= last_end:
+            merged.append((s, e, c))
+            last_end = e
+    out, pos = [], 0
+    for s, e, c in merged:
+        if s > pos:
+            out.append(html.escape(desc[pos:s]))
+        out.append(f'<mark style="background:{c};color:#1a1a1a;padding:0 2px;'
+                   f'border-radius:3px">{html.escape(desc[s:e])}</mark>')
+        pos = e
+    out.append(html.escape(desc[pos:]))
+    return "".join(out)
+
+
 def _card(l: dict, active_groups: dict | None = None, select_client: str | None = None,
           ctx: str = ""):
     ptype     = _detect_type(l)
@@ -345,8 +416,8 @@ def _card(l: dict, active_groups: dict | None = None, select_client: str | None 
     badges = _badge_html(ptype.upper(), type_cls)
     if is_tour:
         badges += _badge_html("🏖️ TOURIST", "orange")
-    if days is not None and days < 2:
-        badges += _badge_html("🆕 NOUVEAU", "new")
+    if days is not None and days < 3:
+        badges += _badge_html("🆕 NEW", "new")
 
     with st.container(border=True):
         # En-tête : titre + prix
@@ -378,9 +449,21 @@ def _card(l: dict, active_groups: dict | None = None, select_client: str | None 
                     st.caption("📷")
             else:
                 st.caption("📷 —")
+            # Bouton « Voir l'annonce » directement SOUS l'image (confort UX).
+            st.markdown(
+                f'<a href="{url}" target="_blank" '
+                f'style="display:inline-block;margin-top:6px;padding:6px 14px;'
+                f'background:#1565c0;color:white;border-radius:6px;'
+                f'text-decoration:none;font-size:13px">🔗 Voir l\'annonce</a>',
+                unsafe_allow_html=True,
+            )
         with desc_col:
             if desc:
-                st.write(desc)
+                if active_groups:
+                    st.markdown(_highlight_description(desc, active_groups),
+                                unsafe_allow_html=True)
+                else:
+                    st.write(desc)
             else:
                 st.caption("_Pas de description disponible_")
 
@@ -406,46 +489,48 @@ def _card(l: dict, active_groups: dict | None = None, select_client: str | None 
                             text=desc[:1500],
                             target_lang=lang_chosen,
                         )
-                        st.session_state[cache_key] = result
+                        # Garantir que result est un dict (pas un booléen ou None)
+                        if isinstance(result, dict):
+                            st.session_state[cache_key] = result
+                        else:
+                            st.session_state[cache_key] = {}
                 result = st.session_state.get(cache_key, {})
-                if result.get("desc_tr"):
+                if isinstance(result, dict) and result.get("desc_tr"):
                     st.markdown(f"**Localisation anonymisée :** {result.get('location_anon', '—')}")
                     st.write(result["desc_tr"])
+                elif not isinstance(result, dict):
+                    st.warning("❌ Traduction indisponible : erreur API ou clé manquante.")
                 else:
-                    st.warning("Clé ANTHROPIC_API_KEY absente ou erreur API.")
+                    st.warning("❌ Traduction indisponible : vérifiez votre clé ANTHROPIC_API_KEY.")
 
         # ── Désactivation par annonce : kicker un faux positif d'un filtre actif ──
         if active_groups:
-            st.caption("⚠️ Faux positif ? Retirer cette annonce d'un filtre :")
+            st.caption("⚠️ Faux positif ? L'exclure définitivement d'un filtre "
+                       "(n'apparaîtra plus dans les recherches futures de ce filtre) :")
             kick_cols = st.columns(len(active_groups))
             for ki, (gk, gd) in enumerate(active_groups.items()):
                 with kick_cols[ki]:
-                    if st.button(f"❌ {gd['label']}", key=f"kick_{ctx}_{gk}_{uid}_{hash(url)}"):
+                    if st.button(f"❌ Faux positif — {gd['label']}",
+                                 key=f"kick_{ctx}_{gk}_{uid}_{hash(url)}"):
                         _toggle_exclusion(gk, url)
                         st.rerun()
 
-        # ── Présélection par client (fiche client) ───────────────────────────
+        # ── Favori ❤️ par client : épingle l'annonce en TÊTE de liste ─────────
         if select_client:
-            selected = url in _client_selection(select_client)
-            if selected:
-                if st.button("✅ Dans la sélection — retirer", key=f"csel_{ctx}_{uid}_{hash(url)}",
-                             type="secondary"):
-                    _toggle_client_selection(select_client, url)
-                    st.rerun()
-            else:
-                if st.button("➕ Ajouter à la sélection", key=f"csel_{ctx}_{uid}_{hash(url)}",
+            favori = url in _client_selection(select_client)
+            if favori:
+                st.markdown('<span class="fav-on">❤️ Favori — épinglé en tête</span>',
+                            unsafe_allow_html=True)
+                if st.button("❤️ Retirer des favoris", key=f"csel_{ctx}_{uid}_{hash(url)}",
                              type="primary"):
                     _toggle_client_selection(select_client, url)
                     st.rerun()
+            else:
+                if st.button("🤍 Ajouter aux favoris (tête de liste)",
+                             key=f"csel_{ctx}_{uid}_{hash(url)}", type="secondary"):
+                    _toggle_client_selection(select_client, url)
+                    st.rerun()
 
-        # Lien
-        st.markdown(
-            f'<a href="{url}" target="_blank" '
-            f'style="display:inline-block;padding:6px 16px;background:#1565c0;'
-            f'color:white;border-radius:6px;text-decoration:none;font-size:13px">'
-            f'🔗 Voir l\'annonce</a>',
-            unsafe_allow_html=True,
-        )
         st.markdown("")  # spacing
 
 
@@ -483,7 +568,8 @@ def _supabase_fts(query: str, limit: int = 50) -> list[dict]:
 
 
 def _contains_pattern(text: str, regex_pattern: str) -> bool:
-    return bool(re.search(regex_pattern, text.lower()))
+    # Robuste au None : certains records (Supabase) ont description_clean=None explicite.
+    return bool(re.search(regex_pattern, (text or "").lower()))
 
 
 # ── Exclusions manuelles par filtre (faux positifs kické depuis l'annonce) ────
@@ -513,14 +599,15 @@ def _toggle_exclusion(group_key: str, url: str):
 
 
 def _search_with_synonyms(data: list[dict], selected_groups: dict) -> list[dict]:
+    # Moteur accent-insensible + fuzzy (modules.search_terms.text_matches).
+    from modules.search_terms import text_matches
     excl = _load_exclusions()
-    filtered = data.copy()
-    for gk, group_data in selected_groups.items():
-        combined = "|".join(group_data["patterns"])
+    filtered = data
+    for gk in selected_groups:
         kicked = set(excl.get(gk, []))
         filtered = [
             item for item in filtered
-            if _contains_pattern(item.get("description_clean", ""), combined)
+            if text_matches(item.get("description_clean") or "", gk)
             and item.get("url") not in kicked   # faux positifs retirés à la main
         ]
     return filtered
@@ -1097,17 +1184,503 @@ Scrape → Dédup SHA256 → Nettoyage HTML → Filtre solaire → Merge Master 
     """)
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+#  ESPACE CLIENT — vue unique : tout part du client (source de vérité).
+#  Fusionne Carte + Recherche + Clients. Aucune recherche libre sans client.
+# ══════════════════════════════════════════════════════════════════════════════
+def _normalize_phone(raw: str | None) -> str | None:
+    """Garde les chiffres uniquement (format wa.me). '00' international → retiré."""
+    if not raw:
+        return None
+    digits = re.sub(r"[^\d]", "", raw)
+    if digits.startswith("00"):
+        digits = digits[2:]
+    return digits or None
+
+
+def _wa_link(digits: str | None) -> str | None:
+    return f"https://wa.me/{digits}" if digits else None
+
+
+_PHONE_RE = re.compile(r'(\+?\d[\d\s().\-]{7,}\d)')
+_NAME_RE = re.compile(
+    r'^\s*([A-ZÀ-Ý][\wÀ-ÿ\'\-]+(?:\s+[A-ZÀ-Ý][\wÀ-ÿ\'\-]+){0,2})\s+'
+    r'(?:cherche|recherche|veut|souhaite|est\s+à\s+la\s+recherche|busca)', re.I)
+
+
+def _extract_nationality_flag(text: str, phone: str | None) -> str:
+    """Retourne l'emoji drapeau du pays basé sur le texte ou le numéro de téléphone.
+    Fallback à 🤍 blanc si aucun pays détecté. Assure la cohérence des drapeaux."""
+    # Mots-clés de nationalité (ordre : le plus long d'abord pour éviter les faux positifs)
+    country_keywords = {
+        "français": "🇫🇷", "france": "🇫🇷",
+        "español": "🇪🇸", "espagnol": "🇪🇸", "españa": "🇪🇸", "spanish": "🇪🇸",
+        "britannique": "🇬🇧", "british": "🇬🇧", "royaume": "🇬🇧", "uk": "🇬🇧",
+        "allemand": "🇩🇪", "deutschland": "🇩🇪", "german": "🇩🇪", "allemagne": "🇩🇪",
+        "italien": "🇮🇹", "italian": "🇮🇹", "italia": "🇮🇹", "italie": "🇮🇹",
+        "néerlandais": "🇳🇱", "néerlandaise": "🇳🇱", "netherlands": "🇳🇱", "dutch": "🇳🇱", "pays-bas": "🇳🇱",
+        "belge": "🇧🇪", "belgian": "🇧🇪", "belgique": "🇧🇪",
+        "portugais": "🇵🇹", "portuguese": "🇵🇹", "portugal": "🇵🇹",
+        "suisse": "🇨🇭", "swiss": "🇨🇭", "suissesse": "🇨🇭",
+        "canadien": "🇨🇦", "canadian": "🇨🇦", "canada": "🇨🇦",
+        "américain": "🇺🇸", "american": "🇺🇸", "usa": "🇺🇸", "united states": "🇺🇸",
+        "australien": "🇦🇺", "australian": "🇦🇺", "australia": "🇦🇺",
+    }
+    # Rechercher un mot-clé de nationalité
+    text_lower = (text or "").lower()
+    for kw, flag in country_keywords.items():
+        if kw in text_lower:
+            return flag
+    # Fallback : code téléphonique international (préfixes les plus longs d'abord)
+    if phone:
+        phone_prefixes = {
+            "351": "🇵🇹",  # Portugal
+            "33": "🇫🇷",   # France
+            "34": "🇪🇸",   # Espagne
+            "39": "🇮🇹",   # Italie
+            "32": "🇧🇪",   # Belgique
+            "31": "🇳🇱",   # Pays-Bas
+            "41": "🇨🇭",   # Suisse
+            "49": "🇩🇪",   # Allemagne
+            "44": "🇬🇧",   # UK
+            "1": "🇺🇸",    # USA (ambigüité CA/US ; CA=+1-2XX)
+            "61": "🇦🇺",   # Australie
+        }
+        for prefix, flag in phone_prefixes.items():
+            if phone.startswith(prefix):
+                return flag
+    # Fallback blanc si aucun pays détecté
+    return "🤍"
+
+
+def _extract_name_phone(text: str) -> tuple[str | None, str | None]:
+    """Extraction légère (UI) : nom (avant 'cherche/recherche/…') + téléphone.
+    Les critères restent extraits par modules.client_parser.parse (logique métier)."""
+    phone = None
+    m = _PHONE_RE.search(text or "")
+    if m:
+        phone = _normalize_phone(m.group(1))
+    name = None
+    nm = _NAME_RE.search(text or "")
+    if nm:
+        name = nm.group(1).strip()
+    return name, phone
+
+
+def _save_client_profile(profile: dict):
+    """Crée ou remplace un profil client (clé = name)."""
+    clients = _load_clients()
+    for i, c in enumerate(clients):
+        if c["name"] == profile["name"]:
+            clients[i] = profile
+            break
+    else:
+        clients.append(profile)
+    _save_clients(clients)
+
+
+def _client_excluded(name: str) -> list[str]:
+    for c in _load_clients():
+        if c["name"] == name:
+            return c.get("excluded_urls") or []
+    return []
+
+
+def _toggle_client_exclusion(name: str, url: str):
+    """Exclusion LIÉE AU CLIENT : le bien reste en base, masqué pour CE client seulement."""
+    clients = _load_clients()
+    for c in clients:
+        if c["name"] == name:
+            ex = c.setdefault("excluded_urls", [])
+            if url in ex:
+                ex.remove(url)
+            else:
+                ex.append(url)
+                sel = c.get("selected_urls") or []
+                if url in sel:            # exclu → retiré de la sélection conservée
+                    sel.remove(url)
+            break
+    _save_clients(clients)
+
+
+def _profile_oneliner(p: dict) -> str:
+    bits = []
+    if p.get("budget_min") or p.get("budget_max"):
+        bits.append(f"💰 {_fmt_price(p.get('budget_min'))} – {_fmt_price(p.get('budget_max'))}")
+    if p.get("terrain_min"):
+        bits.append(f"📐 ≥ {_fmt_m2(p.get('terrain_min'))}")
+    if p.get("construction_min"):
+        bits.append(f"🏠 ≥ {_fmt_m2(p.get('construction_min'))}")
+    if p.get("types"):
+        bits.append("🏷️ " + ", ".join(p["types"]))
+    if p.get("villes"):
+        bits.append("📍 " + ", ".join(p["villes"][:4]))
+    if p.get("phone"):
+        bits.append(f"📞 {p['phone']}")
+    return " · ".join(bits) or "Aucun critère défini"
+
+
+def _edit_client_filters(profile: dict, all_data: list[dict]) -> None:
+    """Filtres préenregistrés du client, modifiables → mettent à jour sa recherche."""
+    nm = profile["name"]
+    with st.expander("🎛️ Critères de ce client (modifiables)"):
+        c1, c2 = st.columns(2)
+        bmin = c1.number_input("Budget min €", value=int(profile.get("budget_min") or 0),
+                               step=10_000, format="%d", key=f"f_bmin_{nm}")
+        bmax = c2.number_input("Budget max €", value=int(profile.get("budget_max") or 0),
+                               step=10_000, format="%d", key=f"f_bmax_{nm}")
+        t1, t2 = st.columns(2)
+        tmin = t1.number_input("Terrain min m²", value=int(profile.get("terrain_min") or 0),
+                               step=500, format="%d", key=f"f_tmin_{nm}")
+        cmin = t2.number_input("Bâti min m²", value=int(profile.get("construction_min") or 0),
+                               step=10, format="%d", key=f"f_cmin_{nm}")
+        villes_all = sorted({l.get("ville") or l.get("ville_canonical") or ""
+                             for l in all_data if l.get("ville") or l.get("ville_canonical")})
+        villes_all = [v for v in villes_all if v]
+        villes = st.multiselect("Villes", villes_all,
+                                default=[v for v in (profile.get("villes") or []) if v in villes_all],
+                                key=f"f_villes_{nm}")
+        types = st.multiselect("Types", ["finca", "casa", "touristic", "autre"],
+                               default=profile.get("types") or [], key=f"f_types_{nm}")
+        kmust = st.text_input("Mots-clés requis (virgules)",
+                              value=", ".join(profile.get("keywords_must") or []), key=f"f_kmust_{nm}")
+        knot = st.text_input("Mots-clés exclus (virgules)",
+                             value=", ".join(profile.get("keywords_must_not") or []), key=f"f_knot_{nm}")
+        note = st.text_input("Note / statut", value=profile.get("note") or "", key=f"f_note_{nm}")
+        if st.button("💾 Mettre à jour les critères", key=f"f_save_{nm}"):
+            profile["budget_min"] = bmin or None
+            profile["budget_max"] = bmax or None
+            profile["terrain_min"] = tmin or None
+            profile["construction_min"] = cmin or None
+            profile["villes"] = villes
+            profile["types"] = types
+            profile["keywords_must"] = [w.strip() for w in kmust.split(",") if w.strip()]
+            profile["keywords_must_not"] = [w.strip() for w in knot.split(",") if w.strip()]
+            profile["note"] = note
+            _save_client_profile(profile)
+            st.success("Critères mis à jour.")
+            st.rerun()
+
+
+_PORTAL_LABELS = {
+    "idealista": "🟢 Idealista", "fotocasa": "🔵 Fotocasa", "kyero": "🟣 Kyero",
+    "thinkspain": "🟠 ThinkSpain", "finquesmar": "🔴 FinquesMar",
+}
+_MOBILIA_FULL = "🟡 Mobilia Full (toutes agences)"
+
+
+def _source_options_and_map(data: list[dict]):
+    """Construit les options du filtre Source : portails + chaque agence Mobilia +
+    un 'Mobilia Full' qui couvre l'ensemble des agences locales. Renvoie
+    (options, {label: prédicat(listing)->bool})."""
+    sites = {(l.get("site") or "").lower() for l in data}
+    fams = sorted({l.get("site_family") for l in data
+                   if (l.get("site") or "").lower() == "mobilia" and l.get("site_family")})
+    options: list[str] = []
+    pmap: dict = {}
+    for s, lbl in _PORTAL_LABELS.items():
+        if s in sites:
+            options.append(lbl)
+            pmap[lbl] = (lambda site: (lambda l: (l.get("site") or "").lower() == site))(s)
+    if "mobilia" in sites:
+        options.append(_MOBILIA_FULL)
+        pmap[_MOBILIA_FULL] = lambda l: (l.get("site") or "").lower() == "mobilia"
+        for f in fams:
+            lbl = f"🏢 {f}"
+            options.append(lbl)
+            pmap[lbl] = (lambda fam: (lambda l: l.get("site_family") == fam))(f)
+    return options, pmap
+
+
+def _apply_sources(data: list[dict], selected: list[str], pmap: dict) -> list[dict]:
+    if not selected:
+        return data
+    preds = [pmap[s] for s in selected if s in pmap]
+    return [l for l in data if any(p(l) for p in preds)]
+
+
+def _filters_info_md() -> str:
+    """Contenu de l'encart info : termes/expressions exacts détectés par filtre."""
+    from modules.search_terms import SEARCH_SYNONYMS
+    lines = ["**Ce que chaque filtre détecte exactement dans la description :**", ""]
+    for gd in SEARCH_SYNONYMS.values():
+        lines.append(f"- **{gd['label']}** → {', '.join(gd['terms'])}")
+    lines.append("")
+    lines.append("- **🚫 Exclure « solar / urbain »** → retire les terrains constructibles : "
+                 "solar (de N m²/ubicado/urbano…), suelo/terreno/parcela urbano(a)/urbanizable/"
+                 "edificable, urbano consolidado, obra nueva. Préserve l'énergie "
+                 "(placas/paneles/energía/instalación solar).")
+    lines.append("")
+    lines.append("_Surlignage : quand un filtre est coché, les mots qui le déclenchent "
+                 "sont surlignés (une couleur par filtre)._")
+    lines.append("_Tous les filtres sont **insensibles aux accents** et tolèrent **1 lettre "
+                 "manquante/erronée** sur les mots seuls._")
+    return "\n".join(lines)
+
+
+def _workspace_search_filters(data: list[dict], profile: dict):
+    """Filtres SOURCE (portail/agence/Mobilia Full) + exclusion « solar » (ON par défaut)
+    + THÉMATIQUES (Piscine, oliviers, amandiers… logique ET). Réutilise la logique
+    existante _search_with_synonyms / SEARCH_SYNONYMS. Renvoie (résultats, groupes cochés).
+
+    PERSISTANCE : 100% des filtres présélectionnés sont mémorisés dans le profil client
+    (clients.json, clé `ws_filters`) SANS bouton save — semés dans session_state au 1er
+    rendu depuis le profil, puis ré-enregistrés automatiquement à chaque changement."""
+    from modules.search_terms import SEARCH_SYNONYMS, is_solar_excluded
+    client_name = profile["name"]
+    saved = profile.get("ws_filters") or {}
+    options, pmap = _source_options_and_map(data)
+
+    # Semer session_state depuis le profil (une seule fois) → restauration inter-session
+    k_src, k_solar = f"src_ws_{client_name}", f"solar_ws_{client_name}"
+    if k_src not in st.session_state:
+        st.session_state[k_src] = [s for s in (saved.get("sources") or []) if s in options]
+    if k_solar not in st.session_state:
+        st.session_state[k_solar] = bool(saved.get("exclude_solar", True))
+    for gk in SEARCH_SYNONYMS:
+        kk = f"chip_ws_{gk}_{client_name}"
+        if kk not in st.session_state:
+            st.session_state[kk] = gk in (saved.get("thematic") or [])
+
+    selected_groups: dict = {}
+    with st.expander("🔎 Filtres de recherche (source + thématiques)"):
+        # Encart info cliquable : termes exacts de chaque filtre
+        info_md = _filters_info_md()
+        if hasattr(st, "popover"):
+            with st.popover("ℹ️ Termes détectés par filtre"):
+                st.markdown(info_md)
+        else:
+            with st.expander("ℹ️ Termes détectés par filtre"):
+                st.markdown(info_md)
+
+        src_sel = st.multiselect("📡 Source / Agence", options, key=k_src)
+        excl_solar = st.checkbox("🚫 Exclure « solar / urbain » (terrain constructible)",
+                                 key=k_solar)
+        st.caption("Thématiques — toutes celles cochées doivent être présentes (logique ET) :")
+        cols = st.columns(3)
+        for i, (gk, gd) in enumerate(SEARCH_SYNONYMS.items()):
+            with cols[i % 3]:
+                if st.checkbox(gd["label"], key=f"chip_ws_{gk}_{client_name}"):
+                    selected_groups[gk] = gd
+
+    # Auto-persistance (sans rerun → pas de boucle) : on réécrit le profil si changé
+    current = {"thematic": list(selected_groups.keys()),
+               "sources": list(src_sel), "exclude_solar": bool(excl_solar)}
+    if current != saved:
+        profile["ws_filters"] = current
+        _save_client_profile(profile)
+
+    out = _apply_sources(data, src_sel, pmap)
+    if excl_solar:
+        out = [l for l in out if not is_solar_excluded(l.get("description_clean") or "")]
+    if selected_groups:
+        out = _search_with_synonyms(out, selected_groups)
+    return out, selected_groups
+
+
+def _workspace_card(l: dict, client_name: str, active_groups: dict | None = None):
+    """Carte bien complète : ⭐ conserver + badge New + surlignage des mots du filtre
+    + boutons « ❌ Faux positif — <Filtre> » (exclut le bien de ce filtre à l'avenir)
+    + 🚫 exclure pour ce client."""
+    _card(l, active_groups=active_groups, select_client=client_name, ctx="ws")
+    if st.button("🚫 Exclure pour ce client", key=f"excl_{client_name}_{hash(l.get('url'))}",
+                 type="secondary"):
+        _toggle_client_exclusion(client_name, l.get("url"))
+        st.rerun()
+
+
+def page_client_workspace(all_data: list[dict]):
+    st.markdown("## 🏡 Espace Client")
+    clients = _load_clients()
+
+    # ── Création depuis description brute ─────────────────────────────────────
+    with st.expander("➕ Nouveau client depuis une description", expanded=not clients):
+        # Sauvegarder l'input dans session_state pour le restaurer après rerun
+        if "new_client_raw" not in st.session_state:
+            st.session_state.new_client_raw = ""
+        if "new_client_name" not in st.session_state:
+            st.session_state.new_client_name = ""
+        if "new_client_phone" not in st.session_state:
+            st.session_state.new_client_phone = ""
+
+        raw = st.text_area(
+            "Collez la description du client",
+            value=st.session_state.new_client_raw,
+            height=110,
+            placeholder=("Jean Dupont cherche un appartement avec licence touristique à "
+                         "Alicante ou Torrevieja, budget 250 000 €, 2 chambres minimum, "
+                         "proche plage, +33612345678"),
+            key="new_client_raw_input",
+        )
+        # Mise à jour dynamique session_state
+        st.session_state.new_client_raw = raw
+
+        ex_name, ex_phone = _extract_name_phone(raw) if raw else (None, None)
+        cc1, cc2 = st.columns(2)
+        name_in = cc1.text_input("Nom détecté", value=st.session_state.new_client_name or ex_name or "",
+                                 key="new_client_name_input")
+        st.session_state.new_client_name = name_in
+        phone_in = cc2.text_input("Téléphone détecté", value=st.session_state.new_client_phone or ex_phone or "",
+                                  key="new_client_phone_input")
+        st.session_state.new_client_phone = phone_in
+
+        if st.button("Créer le client", disabled=not (raw and (name_in or ex_name))):
+            from modules.client_parser import parse
+            # On retire le téléphone du texte avant l'extraction des critères : sinon
+            # ses chiffres polluent l'heuristique budget (ex. 33612345678 → 3361234 €).
+            raw_criteria = _PHONE_RE.sub(" ", raw).strip()
+            client_name = (name_in or ex_name or "Client").strip()
+            profile = parse(client_name, raw_criteria)
+            digits = _normalize_phone(phone_in) or ex_phone
+            profile["phone"] = digits
+            profile["whatsapp"] = _wa_link(digits)
+            # Ajouter emoji drapeau de nationalité au nom du client (fallback 🤍 si aucun)
+            flag = _extract_nationality_flag(raw, digits)
+            profile["name"] = f"{client_name} {flag}"
+            profile.setdefault("status", "Nouveau")
+            profile.setdefault("note", "")
+            profile.setdefault("selected_urls", [])
+            profile.setdefault("excluded_urls", [])
+            # Conserver la description brute originale (avec téléphone, tout compris)
+            profile["raw_description"] = raw
+            _save_client_profile(profile)
+            # NE PAS vider les champs — ils restent visibles pour modification
+            st.success(f"✅ Client « {profile['name']} » créé.")
+            # Zone résumé : afficher les inputs soumis (copie-colle)
+            st.divider()
+            st.subheader("📋 Description brute soumise")
+            st.text_area("Description originale", value=raw, height=120, disabled=True,
+                        label_visibility="collapsed")
+            bullets = profile.get("desiderata_bullets") or []
+            if bullets:
+                st.subheader("📌 Desiderata extraits (IA)")
+                for b in bullets:
+                    st.markdown(b)
+            st.rerun()
+
+    if not clients:
+        st.info("Aucun client enregistré. Créez-en un ci-dessus — "
+                "la recherche part **toujours** d'un client.")
+        return
+
+    # ── Zone client compacte (dropdown + WhatsApp + note + suppression) ───────
+    names = [c["name"] for c in clients]
+    top = st.columns([3, 2, 3, 1])
+    sel_name = top[0].selectbox("Client", names, label_visibility="collapsed")
+    profile = next((c for c in clients if c["name"] == sel_name), None)
+    if not profile:
+        return
+    wa = profile.get("whatsapp")
+    if wa:
+        top[1].markdown(
+            f'<a href="{wa}" target="_blank" style="display:inline-block;padding:5px 12px;'
+            f'background:#25D366;color:#fff;border-radius:6px;text-decoration:none;'
+            f'font-size:13px;font-weight:600">💬 WhatsApp</a>', unsafe_allow_html=True)
+    else:
+        top[1].caption("📵 sans numéro")
+    top[2].caption(f"📌 {profile.get('note') or profile.get('status') or '—'}")
+    if top[3].button("🗑️", help="Supprimer ce client", key=f"delcli_{sel_name}"):
+        _save_clients([c for c in clients if c["name"] != sel_name])
+        st.rerun()
+
+    st.caption(_profile_oneliner(profile))
+
+    # ── Description brute + desiderata IA ────────────────────────────────────
+    raw_desc = profile.get("raw_description") or profile.get("raw_text") or ""
+    bullets = profile.get("desiderata_bullets") or []
+    if raw_desc or bullets:
+        with st.expander("📝 Description originale & desiderata"):
+            if raw_desc:
+                st.markdown("**Description brute soumise :**")
+                st.text_area("", value=raw_desc, height=110, disabled=True,
+                             label_visibility="collapsed",
+                             key=f"raw_desc_{sel_name}")
+            if bullets:
+                st.markdown("**Desiderata extraits (IA) :**")
+                for b in bullets:
+                    st.markdown(b)
+
+    _edit_client_filters(profile, all_data)
+
+    # ── Matching (logique métier inchangée) ──────────────────────────────────
+    from modules.client_matching import rank_listings
+    matches = rank_listings(all_data, profile)
+    for m in matches:
+        m.pop("_match_score", None)
+
+    # Filtres additionnels (source/agence + thématiques) appliqués aux résultats client
+    matches, active_groups = _workspace_search_filters(matches, profile)
+
+    excluded = set(_client_excluded(sel_name))
+    active = [m for m in matches if m.get("url") not in excluded]
+    hidden = [m for m in matches if m.get("url") in excluded]
+
+    # ── Favoris ❤️ épinglés en TÊTE de liste (tri stable : l'ordre par score est
+    # préservé à l'intérieur de chaque groupe). Les favoris restent toujours devant.
+    favoris = set(_client_selection(sel_name))
+    active.sort(key=lambda m: m.get("url") not in favoris)
+
+    # ── Carte toujours visible (biens actifs du client) ──────────────────────
+    # Carte plafonnée pour rester fluide (des milliers de marqueurs figent le rendu).
+    MAP_CAP = 400
+    st.markdown(f"### 🗺️ {len(active)} biens pour « {profile['name']} »")
+    _property_map(active[:MAP_CAP], height=430)
+    if len(active) > MAP_CAP:
+        st.caption(f"Carte limitée aux {MAP_CAP} premiers biens (sur {len(active)}). "
+                   f"Affinez les critères du client pour cibler.")
+
+    st.divider()
+    st.markdown(f"#### 📋 Résultats actifs ({len(active)})")
+    if not active:
+        st.info("Aucun bien actif ne correspond aux critères de ce client.")
+    # Rendu paginé « Charger plus » : on n'affiche jamais plus de `show_n` cartes,
+    # quel que soit le total → fiable et fluide même sur des milliers de biens.
+    PAGE = 25
+    page_key = f"shown_{sel_name}"
+    if page_key not in st.session_state:
+        st.session_state[page_key] = PAGE
+    show_n = min(st.session_state[page_key], len(active))
+    for l in active[:show_n]:
+        _workspace_card(l, sel_name, active_groups)
+    if show_n < len(active):
+        st.caption(f"{show_n} / {len(active)} biens affichés.")
+        if st.button(f"⬇️ Charger plus ({len(active) - show_n} restants)",
+                     key=f"more_{sel_name}"):
+            st.session_state[page_key] += PAGE
+            st.rerun()
+
+    # ── Biens exclus/décommissionnés pour CE client (grisés, restaurables) ───
+    if hidden:
+        with st.expander(f"🚫 Exclus pour ce client ({len(hidden)}) — restaurables"):
+            for l in hidden:
+                hc = st.columns([6, 1])
+                hc[0].markdown(
+                    f"<span style='color:#9aa0a6;font-size:13px'>"
+                    f"{_fmt_price(l.get('prix_eur'))} — {(l.get('title') or '—')[:60]} · "
+                    f"{l.get('ville') or l.get('ville_canonical') or '—'}</span>",
+                    unsafe_allow_html=True)
+                if hc[1].button("↩️", key=f"restore_{sel_name}_{hash(l.get('url'))}",
+                                help="Restaurer pour ce client"):
+                    _toggle_client_exclusion(sel_name, l.get("url"))
+                    st.rerun()
+
+
 # ── MAIN ──────────────────────────────────────────────────────────────────────
 def main():
     all_data = _load()
-    filtered, page = _sidebar_filters(all_data)
+    with st.sidebar:
+        st.image("https://flagcdn.com/es.svg", width=36)
+        st.title("Simple Spain")
+        st.caption("Intelligence Immobilière Catalane")
+        st.divider()
+        page = st.radio(
+            "Page",
+            ["🏡 Espace Client", "📊 Stats", "🛠️ Admin", "ℹ️ À propos"],
+            label_visibility="collapsed",
+        )
 
-    if "Carte" in page:
-        page_carte(filtered)
-    elif "Recherche" in page:
-        page_recherche(filtered)
-    elif "Clients" in page:
-        page_clients(all_data)
+    if "Espace Client" in page:
+        page_client_workspace(all_data)
     elif "Stats" in page:
         page_stats(all_data)
     elif "Admin" in page:

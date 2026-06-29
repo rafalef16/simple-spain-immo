@@ -3,7 +3,7 @@ Client profile parser — converts raw text into structured criteria.
 Uses LLM when available, falls back to keyword heuristics.
 """
 import re
-from modules.llm_client import parse_client_profile
+from modules.llm_client import parse_client_profile, _heuristic_bullets
 
 
 def _parse_budget_heuristic(text: str) -> tuple[int | None, int | None]:
@@ -53,6 +53,11 @@ def parse(name: str, raw_text: str) -> dict:
             val = llm_result.get(key)
             if val is not None:
                 profile[key] = val
+        bullets = llm_result.get("desiderata_bullets")
+        if isinstance(bullets, list) and bullets:
+            profile["desiderata_bullets"] = bullets
+        else:
+            profile["desiderata_bullets"] = _heuristic_bullets(raw_text)
         return profile
 
     # Heuristic fallback
@@ -70,4 +75,5 @@ def parse(name: str, raw_text: str) -> dict:
     if any(w in text_lower for w in ["tourist", "airbnb", "vacaciones", "licencia"]):
         profile["types"].append("touristic")
 
+    profile["desiderata_bullets"] = _heuristic_bullets(raw_text)
     return profile

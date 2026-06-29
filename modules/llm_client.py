@@ -76,37 +76,38 @@ Respond ONLY as valid JSON with this exact structure:
 
 def parse_client_profile(raw_text: str) -> dict:
     """
-    Parse natural language client requirements into structured criteria.
-    Returns structured dict or empty criteria on failure.
+    Parse natural language client requirements into structured criteria + bullet-point summary.
+    Returns structured dict (with 'desiderata_bullets' key) or empty on failure.
     """
     client = _get_client()
     if not client or not raw_text:
         return {}
 
-    prompt = f"""You are a real estate CRM assistant.
-Parse the following client requirements (written in French, English, or Spanish) into structured criteria.
+    prompt = f"""Tu es un assistant CRM immobilier.
+Analyse le texte suivant décrivant les critères d'un client (en français, anglais ou espagnol).
 
-Client text:
+Texte client :
 {raw_text[:2000]}
 
-Respond ONLY as valid JSON:
+Réponds UNIQUEMENT en JSON valide avec cette structure EXACTE :
 {{
-  "budget_min": <int or null>,
-  "budget_max": <int or null>,
-  "terrain_min": <int m² or null>,
-  "terrain_max": <int m² or null>,
-  "construction_min": <int m² or null>,
-  "construction_max": <int m² or null>,
-  "villes": [<list of town names or empty>],
-  "types": [<list from: finca, casa, touristic, autre>],
-  "keywords_must": [<required keywords in description>],
-  "keywords_must_not": [<excluded keywords>]
+  "budget_min": <entier ou null>,
+  "budget_max": <entier ou null>,
+  "terrain_min": <entier m² ou null>,
+  "terrain_max": <entier m² ou null>,
+  "construction_min": <entier m² ou null>,
+  "construction_max": <entier m² ou null>,
+  "villes": [<liste de noms de villes ou vide>],
+  "types": [<liste parmi : finca, casa, touristic, autre>],
+  "keywords_must": [<mots-clés obligatoires dans la description>],
+  "keywords_must_not": [<mots-clés à exclure>],
+  "desiderata_bullets": [<liste de bullet points en français résumant 100% des desiderata du client sans en omettre AUCUN — chaque élément commence par "• ">]
 }}"""
 
     try:
         message = client.messages.create(
             model=MODEL,
-            max_tokens=512,
+            max_tokens=1024,
             messages=[{"role": "user", "content": prompt}],
         )
         import json
@@ -115,3 +116,12 @@ Respond ONLY as valid JSON:
         return json.loads(raw)
     except Exception:
         return {}
+
+
+def _heuristic_bullets(raw_text: str) -> list[str]:
+    """Fallback bullet points when no LLM is available."""
+    if not raw_text:
+        return []
+    import re
+    chunks = re.split(r"[,;\n]+", raw_text)
+    return [f"• {c.strip()}" for c in chunks if len(c.strip()) > 3]
